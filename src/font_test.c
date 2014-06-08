@@ -4,15 +4,17 @@
 #include <locale.h>
 #include <stdint.h>
 
-wchar_t *text = L"Windows"; // abdfghpqy// Windows Steve 中文字体ɒɔ
+wchar_t *text = L"meyLinux"; // abdfghpqy// Windows Steve 中文字体ɒɔ
 
+int font_height = 14;
 int grid_size = 16; // in pixel
-//#define RASTER_GLYPH_GRIDS
+#define RASTER_GLYPH_GRIDS
 //#define RASTER_GLYPH_POINTS
-int draw_scanline = 1;
-//FT_ULong load_flags = FT_LOAD_NO_HINTING;
+int fill_contour = 1;
+FT_ULong load_flags = FT_LOAD_NO_HINTING;
 //FT_ULong load_flags = FT_LOAD_NO_AUTOHINT;
-FT_ULong load_flags = FT_LOAD_FORCE_AUTOHINT;
+//FT_ULong load_flags = FT_LOAD_FORCE_AUTOHINT;
+int black_on_white = 1;
 
 //color_t color_r = { 0xff, 0x00, 0x00 };
 //color_t color_g = { 0x00, 0xff, 0x00 };
@@ -27,13 +29,13 @@ FT_ULong load_flags = FT_LOAD_FORCE_AUTOHINT;
 unsigned char contour_colors[3] = { 1, 2, 3 };
 unsigned char filling_color = 0xff;
 unsigned char debug_color = 0x80;
+unsigned char grid_color = 0x00;
 
 bitmap_t *bmp_raster = NULL; /* for bresenham_rasterizer */ // TODO free
 
 font_conf_t font;
 glyph_run_t grun;
 rect_s rect;
-int font_height = 10;
 
 void text_compare() {
 	char s[1024];
@@ -89,17 +91,18 @@ inline int raster_on_contour(unsigned char *s) {
 	return s[0] == contour_colors[0] || s[0] == contour_colors[1];
 }
 
-inline void raster_copy_contour(bitmap_t *dst, bitmap_t *src) {
+inline void raster_copy_contour(bitmap_t *dst, bitmap_t *src, int width,
+		int height) {
 	unsigned char *dst_line = dst->data;
 	unsigned char *src_line = src->data;
 	unsigned char *d, *s;
 	int i, j;
-	for (j = 0; j < src->rect.height;
+	for (j = 0; j < src->rect.height && j < height;
 			++j, (dst_line += dst->bytes_per_line, src_line +=
 					src->bytes_per_line)) {
 		d = dst_line;
 		s = src_line;
-		for (i = 0; i < src->rect.width; ++i) {
+		for (i = 0; i < src->rect.width && i < width; ++i) {
 			if (s[0] == contour_colors[0])
 				d[2] = 0xff, d[1] = 0x00, d[0] = 0x00;
 			else if (s[0] == contour_colors[1])
@@ -266,32 +269,37 @@ inline int raster_contour_around(unsigned char *s, int bytes_per_line) {
 
 // http://en.wikipedia.org/wiki/Rasterisation#Scan_conversion
 // http://en.wikipedia.org/wiki/Scanline_algorithm
-void raster_fill_contour(bitmap_t *bmp_dst, bitmap_t *bmp_src, int x, int y,
-		int dst_w, int dst_h, int grid_size) {
-	int src_pixel_size = 1; // bmp_src->bytes_per_pixel;
-	int src_line_size = bmp_src->bytes_per_line;
-	unsigned char *src_line_out = bmp_src->data + y * src_line_size
-			+ x * src_pixel_size;
-	unsigned char *dst_line = bmp_dst->data;
-	unsigned char *src_line, *s_out, *s, *d;
+void raster_fill_contour(bitmap_t *dst, bitmap_t *src, int x, int y, int dst_w,
+		int dst_h, int grid_size) {
+	int dst_pixel_size = dst->bytes_per_pixel;
+	int dst_line_size = dst->bytes_per_line;
+	unsigned char *dst_line = dst->data;
 
-	double grid_weight = grid_size * grid_size;
+	int src_pixel_size = 1; // src->bytes_per_pixel;
+	int src_line_size = src->bytes_per_line;
+	unsigned char *src_line_outer = src->data + y * src_line_size
+			+ x * src_pixel_size;
+
+	unsigned char *src_line, *s_outer, *s, *d;
+	int src_line_incr = src_line_size * grid_size;
+	int src_grid_incr = src_pixel_size * grid_size;
+
+	const int grid_weight = grid_size * grid_size;
+	double coverage;
 	char *prev_on = malloc(grid_size);
 	char *fill_flags = malloc(grid_size);
-	int i, j, weight;
-	for (j = 0; j < dst_h;
-			j++, (dst_line += bmp_dst->bytes_per_line, src_line_out +=
-					src_line_size * grid_size)) {
+	int i, j;
+	for (j = 0; j < dst_h; ++j, (dst_line += dst_line_size, src_line_outer +=
+			src_line_incr)) {
 		d = dst_line;
-		s_out = src_line_out;
+		s_outer = src_line_outer;
 		memset(prev_on, 0, grid_size);
 		memset(fill_flags, 0, grid_size);
-		for (i = 0; i < dst_w;
-				i++, (d += bmp_dst->bytes_per_pixel, s_out += src_pixel_size
-						* grid_size)) {
+		for (i = 0; i < dst_w; i++, (d += dst_pixel_size, s_outer +=
+				src_grid_incr)) {
 			// calculate coverage of grid (i, j)
-			grid_weight = 0;
-			src_line = s_out;
+			coverage = 0;
+			src_line = s_outer;
 			for (y = 0; y < grid_size; y++, (src_line += src_line_size)) {
 				s = src_line;
 				for (x = 0; x < grid_size; x++, (s += src_pixel_size)) {
@@ -329,14 +337,19 @@ void raster_fill_contour(bitmap_t *bmp_dst, bitmap_t *bmp_src, int x, int y,
 						if (s[0] == 0)
 							s[0] = filling_color;
 					}
+
+					if (s[0] != 0)
+						coverage++;
 				}
 			}
-			double coverage = 1 - weight / grid_weight;
-//			printf("%d %d = %d/%.0f\n", x, y, grid_weight, grid_square);
-			d[0] = 0xff * coverage, d[1] = 0xff * coverage, d[2] = 0xff
-					* coverage;
-//			if (grid_weight > 0)
-//				d[0] = 0x00, d[1] = 0x00, d[2] = 0x00;
+			if (coverage > 0) {
+				coverage = coverage / grid_weight;
+				if (black_on_white)
+					coverage = 1 - coverage;
+				d[0] = 0xff * coverage, d[1] = 0xff * coverage, d[2] = 0xff
+						* coverage;
+				printf("%d %d = %.0f/%.0f\n", x, y, coverage, grid_weight);
+			}
 		}
 	}
 	free(prev_on);
@@ -344,7 +357,7 @@ void raster_fill_contour(bitmap_t *bmp_dst, bitmap_t *bmp_src, int x, int y,
 }
 
 int raster_draw_outline(bitmap_t *canvas, wchar_t c, font_conf_t *font,
-		FT_ULong load_flags, int x, int y, double scale) {
+		FT_ULong load_flags, int origin_x, int origin_y, double scale) {
 	FT_Face face = font->face;
 	FT_UInt glyph_index = FT_Get_Char_Index(face, (FT_ULong) c);
 	if (glyph_index == 0) {
@@ -374,28 +387,29 @@ int raster_draw_outline(bitmap_t *canvas, wchar_t c, font_conf_t *font,
 	buf[1] = 0;
 
 	int i, j = 0;
-	int draw = 1;
 	int max_x = 0;
+	int overflow = 0;
 	for (i = 0; i < outline->n_points; i++) {
 		FT_Vector *curr = &outline->points[i];
 		if (scale != 0 && scale != 1) {
 			curr->x *= scale;
 			curr->y *= scale;
 		}
-		curr->x += x;
-		curr->y = y - curr->y;
+
+		curr->x += origin_x;
+		curr->y = origin_y - curr->y;
 		if (curr->x > max_x)
 			max_x = curr->x;
 
-//		if (curr->x < 1 || curr->y < 1 || curr->x >= canvas->rect.width
-//				|| curr->y >= canvas->rect.height) {
-//			printf("overflow: %ld,%ld\n", curr->x, curr->y);
-//			draw = 0;
-//			break;
-//		}
+		if (curr->x < 0 || curr->x >= canvas->rect.width || curr->y < 0
+				|| curr->y >= canvas->rect.height) {
+			printf("overflow: %ld,%ld\n", curr->x, curr->y);
+			overflow = 1;
+			break;
+		}
 	}
 
-	if (!draw)
+	if (overflow)
 		return 0;
 
 	FT_Vector *last_on = NULL;
@@ -517,8 +531,8 @@ int raster_draw_outline(bitmap_t *canvas, wchar_t c, font_conf_t *font,
 			outline->n_contours, max_x);
 
 	int advance_x = glyph->advance.x >> 10;
-	if (advance_x % 64 != 0)
-		advance_x = (advance_x / 64 + 1) * 64; // round to integral grids
+//	if (advance_x % 64 != 0)
+//		advance_x = (advance_x / 64 + 1) * 64; // round to integral grids
 	return advance_x * scale;
 }
 
@@ -574,44 +588,43 @@ int x11_processor(XEvent *event) {
 						load_flags, offset_x + advance_x, origin_y, grid_scale);
 			}
 
-			if (draw_scanline) {
-				bitmap_t sub = *bmp_raster;
-				bitmap_shift(&sub, offset_x + advance_x + offset_x, offset_y);
-//				raster_clean(&sub, &bmp_canvas, offset_x, offset_y,
-//						advance_x / grid_size, font.ascender + font.descender,
-//						grid_size);
+			if (fill_contour) {
+//				bitmap_t sub = *bmp_raster;
+				bitmap_t sub = bmp_canvas;
+				bitmap_shift(&sub, offset_x + advance_x + 20, offset_y + 100);
 				raster_fill_contour(&sub, bmp_raster, offset_x, offset_y,
 						advance_x / grid_size, font.ascender + font.descender,
 						grid_size);
 			}
 
-#ifdef RASTER_GLYPH_GRIDS
 			int max_x = min(offset_x + advance_x, bmp_canvas.rect.width);
 			int max_y = min(origin_y + font.descender * grid_size,
 					bmp_canvas.rect.height);
 
-//			printf("(%d,%d) advance %d\n", x, y, advance_x);
-			printf("(%d,%d) descender %d\n", max_x, max_y, font.descender);
+#ifdef RASTER_GLYPH_GRIDS
+
+			printf("bbox (%d,%d) (%d,%d) descender %d\n", offset_x, offset_y,
+					max_x, max_y, font.descender);
 
 			int x, y;
 			FT_Vector p0, p1;
 
 			// draw horizontal grid lines
-			p0.y = offset_y, p1.y = max_y;
-			for (x = offset_x; x <= max_x; x += grid_size) {
-				p0.x = x, p1.x = x;
-				draw_line(&bmp_canvas, &p0, &p1, &color_z);
-			}
-
-			// draw vertical grid lines
 			p0.x = offset_x, p1.x = max_x;
 			for (y = offset_y; y <= max_y; y += grid_size) {
 				p0.y = y, p1.y = y;
-				draw_line(&bmp_canvas, &p0, &p1, &color_z);
+				draw_line(&bmp_canvas, &p0, &p1, grid_color);
+			}
+
+			// draw vertical grid lines
+			p0.y = offset_y, p1.y = max_y;
+			for (x = offset_x; x <= max_x; x += grid_size) {
+				p0.x = x, p1.x = x;
+				draw_line(&bmp_canvas, &p0, &p1, grid_color);
 			}
 #endif
 
-			raster_copy_contour(&bmp_canvas, bmp_raster);
+			raster_copy_contour(&bmp_canvas, bmp_raster, max_x, max_y);
 		}
 		window_repaint(NULL);
 		break;
@@ -636,8 +649,9 @@ int main(int argc, char *argv[]) {
 //	IPA fonts: CharisSIL-R.ttf DoulosSIL-R.ttf LinLibertine_R.otf
 	freetype_init(2, 2, 10240 * 1024, 1);
 //	freetype_font("fonts/XinGothic.otf", "fonts/方正兰亭细黑_GBK.ttf");
-	freetype_font("/home/pxlogpx/.fonts/_H_HelveticaNeue.ttc", 4,
-			"fonts/arial.ttf", 0);
+	freetype_font("/home/pxlogpx/.fonts/_H_Menlo.ttc", 1, "fonts/arial.ttf", 0);
+//	freetype_font("/home/pxlogpx/.fonts/_H_HelveticaNeue.ttc", 4,
+//			"fonts/arial.ttf", 0);
 
 	font_init(&font, font_height, 5);
 
@@ -651,22 +665,3 @@ int main(int argc, char *argv[]) {
 
 	return EXIT_SUCCESS;
 }
-
-//int x, y, t, s;
-//if (p0->x == p1->x) {
-//	if (p0->y == p1->y) {
-//
-//	}
-//} else {
-//	if (p0->x > p1->x) {
-//		FT_Vector *p = p0;
-//		p0 = p1;
-//		p1 = p;
-//	}
-//
-//	for (t = 0; t < 1; t += 0.01) {
-//		s = 1 - t;
-//		x = s * s * p0->x + 2 * s * t * p1->x + t * t * p2->x;
-//		y = s * s * p0->y + 2 * s * t * p1->y + t * t * p2->y;
-//	}
-//}
