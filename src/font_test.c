@@ -4,7 +4,7 @@
 #include <locale.h>
 #include <stdint.h>
 
-wchar_t *text = L"Wnd"; // abdfghpqy// Windows Steve 中文字体ɒɔ
+wchar_t *text = L"Windows"; // abdfghpqy// Windows Steve 中文字体ɒɔ
 
 int grid_size = 16; // in pixel
 //#define RASTER_GLYPH_GRIDS
@@ -26,6 +26,7 @@ FT_ULong load_flags = FT_LOAD_FORCE_AUTOHINT;
 /* color component-value pair */
 unsigned char contour_colors[3] = { 1, 2, 3 };
 unsigned char filling_color = 0xff;
+unsigned char debug_color = 0x80;
 
 bitmap_t *bmp_raster = NULL; /* for bresenham_rasterizer */ // TODO free
 
@@ -76,7 +77,15 @@ inline void bitmap_init(bitmap_t *bmp, rect_s *rect, int bytes_per_pixel) {
 	bmp->data = calloc(1, bmp->bytes_per_line * rect->height);
 }
 
-inline int raster_is_on(unsigned char *s) {
+void bitmap_shift(bitmap_t *bmp, int shift_x, int shift_y) {
+	bmp->rect.left += shift_x;
+	bmp->rect.width -= shift_x;
+	bmp->rect.top += shift_y;
+	bmp->rect.height -= shift_y;
+	bmp->data += shift_y * bmp->bytes_per_line + shift_x * bmp->bytes_per_pixel;
+}
+
+inline int raster_on_contour(unsigned char *s) {
 	return s[0] == contour_colors[0] || s[0] == contour_colors[1];
 }
 
@@ -99,31 +108,33 @@ inline void raster_copy_contour(bitmap_t *dst, bitmap_t *src) {
 				d[2] = 0x00, d[1] = 0x00, d[0] = 0xff;
 			else if (s[0] == filling_color)
 				d[2] = 0x00, d[1] = 0x00, d[0] = 0x00;
+			else if (s[0] == debug_color)
+				d[2] = 0x00, d[1] = 0x00, d[0] = 0x00;
 			d += dst->bytes_per_pixel;
 			s++;
 		}
 	}
 }
 
-inline int raster_slim_contour(bitmap_t *canvas, FT_Vector *p0, FT_Vector *p1) {
+inline int raster_slim_contour(bitmap_t *canvas, FT_Vector *p0) {
 	unsigned char *s = canvas->data + p0->y * canvas->bytes_per_line
 			+ p0->x * canvas->bytes_per_pixel;
 	unsigned char *t = s - canvas->bytes_per_line;
 
 	// line above
-	int a = raster_is_on(t);
-	int al = raster_is_on(t - canvas->bytes_per_pixel);
-	int ar = raster_is_on(t + canvas->bytes_per_pixel);
+	int a = raster_on_contour(t);
+	int al = raster_on_contour(t - canvas->bytes_per_pixel);
+	int ar = raster_on_contour(t + canvas->bytes_per_pixel);
 
 	// line below
 	t = s + canvas->bytes_per_line;
-	int b = raster_is_on(t);
-	int bl = raster_is_on(t - canvas->bytes_per_pixel);
-	int br = raster_is_on(t + canvas->bytes_per_pixel);
+	int b = raster_on_contour(t);
+	int bl = raster_on_contour(t - canvas->bytes_per_pixel);
+	int br = raster_on_contour(t + canvas->bytes_per_pixel);
 
 	// left and right
-	int l = raster_is_on(s - canvas->bytes_per_pixel);
-	int r = raster_is_on(s + canvas->bytes_per_pixel);
+	int l = raster_on_contour(s - canvas->bytes_per_pixel);
+	int r = raster_on_contour(s + canvas->bytes_per_pixel);
 
 	char slim = 0;
 	if (!(a || al || ar)) { // no above, growing down
@@ -144,13 +155,13 @@ inline int raster_slim_contour(bitmap_t *canvas, FT_Vector *p0, FT_Vector *p1) {
 				s[0] = contour_colors[2];
 				FT_Vector p = *p0;
 				p.y++;
-				raster_slim_contour(canvas, &p, p1);
+				raster_slim_contour(canvas, &p);
 				if (bl) {
 					p.x--;
-					raster_slim_contour(canvas, &p, p1);
+					raster_slim_contour(canvas, &p);
 				} else if (br) {
 					p.x++;
-					raster_slim_contour(canvas, &p, p1);
+					raster_slim_contour(canvas, &p);
 				}
 			}
 			/* above: ---    ---
@@ -161,7 +172,7 @@ inline int raster_slim_contour(bitmap_t *canvas, FT_Vector *p0, FT_Vector *p1) {
 				s[0] = contour_colors[2];
 				FT_Vector p = *p0;
 				p.y++;
-				raster_slim_contour(canvas, &p, p1);
+				raster_slim_contour(canvas, &p);
 			}
 		} else if (!(l || bl) || !(r || br)) {
 			/* no left or no right
@@ -178,19 +189,19 @@ inline int raster_slim_contour(bitmap_t *canvas, FT_Vector *p0, FT_Vector *p1) {
 				s[0] = contour_colors[2];
 				FT_Vector p = *p0;
 				p.y--;
-				raster_slim_contour(canvas, &p, p1);
+				raster_slim_contour(canvas, &p);
 				if (al) {
 					p.x--;
-					raster_slim_contour(canvas, &p, p1);
+					raster_slim_contour(canvas, &p);
 				} else if (ar) {
 					p.x++;
-					raster_slim_contour(canvas, &p, p1);
+					raster_slim_contour(canvas, &p);
 				}
 			} else if (!(l || r)) {
 				s[0] = contour_colors[2];
 				FT_Vector p = *p0;
 				p.y--;
-				raster_slim_contour(canvas, &p, p1);
+				raster_slim_contour(canvas, &p);
 			}
 		} else if (!(l || al) || !(r || ar)) {
 			slim = 1;
@@ -236,35 +247,16 @@ inline int raster_slim_contour(bitmap_t *canvas, FT_Vector *p0, FT_Vector *p1) {
 #define PREV_ON_BELOW 4
 #define BEFOR_ON_FILL 8
 
-inline int raster_around_on(unsigned char *s, bitmap_t *bmp) {
-	unsigned char *t;
-	t = s - bmp->bytes_per_line;
-	int above_on = raster_is_on(t) || raster_is_on(t - bmp->bytes_per_pixel)
-			|| raster_is_on(t + bmp->bytes_per_pixel);
-	t = s + bmp->bytes_per_line;
-	int below_on = raster_is_on(t) || raster_is_on(t - bmp->bytes_per_pixel)
-			|| raster_is_on(t + bmp->bytes_per_pixel);
+inline int raster_contour_around(unsigned char *s, int bytes_per_line) {
+	int bytes_per_pixel = 1;
+	unsigned char *a = s - bytes_per_line;
+	unsigned char *b = s + bytes_per_line;
+	int above_on = raster_on_contour(a - bytes_per_pixel)
+			|| raster_on_contour(a) || raster_on_contour(a + bytes_per_pixel);
+	int below_on = raster_on_contour(b - bytes_per_pixel)
+			|| raster_on_contour(b) || raster_on_contour(b + bytes_per_pixel);
 	if (above_on && below_on)
-		return 0;
-//		return PREV_ON_ABOVE | PREV_ON_BELOW;
-	if (above_on)
-		return PREV_ON_ABOVE;
-	if (below_on)
-		return PREV_ON_BELOW;
-	return 0;
-}
-
-inline int raster_around_on2(unsigned char *s, bitmap_t *bmp) {
-	unsigned char *t;
-	t = s - bmp->bytes_per_line;
-	int above_on = raster_is_on(t) || raster_is_on(t - bmp->bytes_per_pixel)
-			|| raster_is_on(t + bmp->bytes_per_pixel);
-	t = s + bmp->bytes_per_line;
-	int below_on = raster_is_on(t) || raster_is_on(t - bmp->bytes_per_pixel)
-			|| raster_is_on(t + bmp->bytes_per_pixel);
-	if (above_on && below_on)
-		return 0;
-//		return PREV_ON_ABOVE | PREV_ON_BELOW;
+		return 0; // return PREV_ON_ABOVE | PREV_ON_BELOW;
 	if (above_on)
 		return PREV_ON_ABOVE;
 	if (below_on)
@@ -274,10 +266,12 @@ inline int raster_around_on2(unsigned char *s, bitmap_t *bmp) {
 
 // http://en.wikipedia.org/wiki/Rasterisation#Scan_conversion
 // http://en.wikipedia.org/wiki/Scanline_algorithm
-void raster_scanline(bitmap_t *bmp_dst, bitmap_t *bmp_src, int x, int y,
+void raster_fill_contour(bitmap_t *bmp_dst, bitmap_t *bmp_src, int x, int y,
 		int dst_w, int dst_h, int grid_size) {
-	unsigned char *src_line_out = bmp_src->data + y * bmp_src->bytes_per_line
-			+ x * bmp_src->bytes_per_pixel;
+	int src_pixel_size = 1; // bmp_src->bytes_per_pixel;
+	int src_line_size = bmp_src->bytes_per_line;
+	unsigned char *src_line_out = bmp_src->data + y * src_line_size
+			+ x * src_pixel_size;
 	unsigned char *dst_line = bmp_dst->data;
 	unsigned char *src_line, *s_out, *s, *d;
 
@@ -287,36 +281,44 @@ void raster_scanline(bitmap_t *bmp_dst, bitmap_t *bmp_src, int x, int y,
 	int i, j, weight;
 	for (j = 0; j < dst_h;
 			j++, (dst_line += bmp_dst->bytes_per_line, src_line_out +=
-					bmp_src->bytes_per_line * grid_size)) {
+					src_line_size * grid_size)) {
 		d = dst_line;
 		s_out = src_line_out;
 		memset(prev_on, 0, grid_size);
 		memset(fill_flags, 0, grid_size);
 		for (i = 0; i < dst_w;
-				i++, (d += bmp_dst->bytes_per_pixel, s_out +=
-						bmp_src->bytes_per_pixel * grid_size)) {
+				i++, (d += bmp_dst->bytes_per_pixel, s_out += src_pixel_size
+						* grid_size)) {
 			// calculate coverage of grid (i, j)
 			grid_weight = 0;
 			src_line = s_out;
-			for (y = 0; y < grid_size;
-					y++, (src_line += bmp_src->bytes_per_line)) {
+			for (y = 0; y < grid_size; y++, (src_line += src_line_size)) {
 				s = src_line;
-				for (x = 0; x < grid_size;
-						x++, (s += bmp_src->bytes_per_pixel)) {
-					// maxim and minim: \/-curve and /\-curve
-					if (raster_is_on(s)) {
+				for (x = 0; x < grid_size; x++, (s += src_pixel_size)) {
+					/* convex (up and down) curves: \_/ and /`\
+					 *     *--a (change on a)/(recover to BEFOR_ON_FILL)
+					 *    /    \
+					 *   /  *b  \ (change on b?)/(recover to BEFOR_ON_FILL)
+					 *  /  /  \  \
+					 * *--*    *--*
+					 */
+//					if (i == 5 && j == 7 && x == 2 && y == 5)
+//						s[0] = debug_color;
+					if (raster_on_contour(s)) {
 						if (!prev_on[y]) {
 							//  (off) on
 							prev_on[y] = PREV_ON
 									| (fill_flags[y] ? BEFOR_ON_FILL : 0);
-							int around_on = raster_around_on(s, bmp_src);
+							int around_on = raster_contour_around(s,
+									src_line_size);
 							prev_on[y] |= around_on;
 							fill_flags[y] = !fill_flags[y];
 						} //EL  (on)  on
 					} else {
 						if (prev_on[y]) {
 							//  (on) off
-							int around_on = raster_around_on(s, bmp_src);
+							int around_on = raster_contour_around(
+									s - src_pixel_size, src_line_size);
 							if (around_on && (prev_on[y] & around_on))
 								fill_flags[y] = prev_on[y] & BEFOR_ON_FILL;
 							prev_on[y] = 0;
@@ -339,90 +341,6 @@ void raster_scanline(bitmap_t *bmp_dst, bitmap_t *bmp_src, int x, int y,
 	}
 	free(prev_on);
 	free(fill_flags);
-}
-
-void raster_scanline_(bitmap_t *bmp_dst, bitmap_t *bmp_src, int x, int y,
-		int dst_w, int dst_h, int grid_size) {
-	unsigned char *src_line_out = bmp_src->data + y * bmp_src->bytes_per_line
-			+ x * bmp_src->bytes_per_pixel;
-	unsigned char *dst_line = bmp_dst->data;
-	unsigned char *src_line, *s_out, *s, *d;
-
-	double grid_weight = grid_size * grid_size;
-	char *prev_on = malloc(grid_size);
-	char *fill_flags = malloc(grid_size);
-	int i, j, weight;
-	for (j = 0; j < dst_h;
-			j++, (dst_line += bmp_dst->bytes_per_line, src_line_out +=
-					bmp_src->bytes_per_line * grid_size)) {
-		d = dst_line;
-		s_out = src_line_out;
-		memset(prev_on, 0, grid_size);
-		memset(fill_flags, 0, grid_size);
-		for (i = 0; i < dst_w;
-				i++, (d += bmp_dst->bytes_per_pixel, s_out +=
-						bmp_src->bytes_per_pixel * grid_size)) {
-			// calculate coverage of grid (i, j)
-			grid_weight = 0;
-			src_line = s_out;
-			for (y = 0; y < grid_size;
-					y++, (src_line += bmp_src->bytes_per_line)) {
-				s = src_line;
-				for (x = 0; x < grid_size;
-						x++, (s += bmp_src->bytes_per_pixel)) {
-					// maxim and minim: \/-curve and /\-curve
-					/*
-					 *     *--a (change on a)/(recover to BEFOR_ON_FILL)
-					 *    /    \
-					 *   /  *b  \ (change on b?)/(recover to BEFOR_ON_FILL)
-					 *  /  /  \  \
-					 * *--*    *--*
-					 */
-//					if (j == 2 && i == 4 && y == 2 && x == 9)
-//						printf("%d\n", j);
-					if (raster_is_on(s)) {
-						if (!prev_on[y]) {
-							//  (off) on
-							prev_on[y] = PREV_ON
-									| (fill_flags[y] ? BEFOR_ON_FILL : 0);
-							int around_on = raster_around_on(s, bmp_src);
-							prev_on[y] |= around_on;
-							fill_flags[y] = !fill_flags[y];
-						} //EL  (on)  on
-					} else {
-						if (prev_on[y]) {
-							//  (on) off
-							int around_on = raster_around_on(s, bmp_src);
-							if (around_on && (prev_on[y] & around_on))
-								fill_flags[y] = prev_on[y] & BEFOR_ON_FILL;
-							prev_on[y] = 0;
-						} //EL (off) off
-					}
-
-					// filling with green, overwrite contour as purple
-//					if (fill_flags[y])
-//						s[filling_c] = 0x00;
-				}
-			}
-			double coverage = 1 - weight / grid_weight;
-//			printf("%d %d = %d/%.0f\n", x, y, grid_weight, grid_square);
-			d[0] = 0xff * coverage, d[1] = 0xff * coverage, d[2] = 0xff
-					* coverage;
-//			if (grid_weight > 0)
-//				d[0] = 0x00, d[1] = 0x00, d[2] = 0x00;
-		}
-	}
-	free(prev_on);
-	free(fill_flags);
-}
-
-void bitmap_shift(bitmap_t *bmp, int left_delta, int top_delta) {
-	bmp->rect.left += left_delta;
-	bmp->rect.top += top_delta;
-	bmp->rect.width -= left_delta;
-	bmp->rect.height -= top_delta;
-	bmp->data += top_delta * bmp->bytes_per_line
-			+ left_delta * bmp->bytes_per_pixel;
 }
 
 int raster_draw_outline(bitmap_t *canvas, wchar_t c, font_conf_t *font,
@@ -519,13 +437,13 @@ int raster_draw_outline(bitmap_t *canvas, wchar_t c, font_conf_t *font,
 					draw_conic(canvas, last_on, last_conic, curr,
 							contour_colors[contour_draws++ % 2]);
 					if (contour_draws > 1)
-						raster_slim_contour(canvas, last_on, curr);
+						raster_slim_contour(canvas, last_on);
 				} else {
 					if (!is_same_point(last_on, curr)/*TBD*/) {
 						draw_line(canvas, last_on, curr,
 								contour_colors[contour_draws++ % 2]);
 						if (contour_draws > 1)
-							raster_slim_contour(canvas, last_on, curr);
+							raster_slim_contour(canvas, last_on);
 					}
 				}
 			}
@@ -535,7 +453,7 @@ int raster_draw_outline(bitmap_t *canvas, wchar_t c, font_conf_t *font,
 				draw_line(canvas, curr, contour_start,
 						contour_colors[contour_draws++ % 2]);
 				if (contour_draws > 1)
-					raster_slim_contour(canvas, curr, contour_start);
+					raster_slim_contour(canvas, curr);
 				last_on = NULL;
 				last_conic = NULL;
 			} else {
@@ -556,7 +474,7 @@ int raster_draw_outline(bitmap_t *canvas, wchar_t c, font_conf_t *font,
 					draw_conic(canvas, &temp, last_conic, &virtual_on,
 							contour_colors[contour_draws++ % 2]);
 					if (contour_draws > 1)
-						raster_slim_contour(canvas, &temp, &virtual_on);
+						raster_slim_contour(canvas, &temp);
 					printf(" |on/conic %ld %ld - %ld %ld\n", temp.x, temp.y,
 							virtual_on.x, virtual_on.y);
 				}
@@ -567,7 +485,7 @@ int raster_draw_outline(bitmap_t *canvas, wchar_t c, font_conf_t *font,
 					draw_conic(canvas, last_on, curr, contour_start,
 							contour_colors[contour_draws++ % 2]);
 					if (contour_draws > 1)
-						raster_slim_contour(canvas, last_on, contour_start);
+						raster_slim_contour(canvas, last_on);
 				}
 				printf(" |on/conic %ld %ld - %ld %ld\n", last_on->x, last_on->y,
 						contour_start->x, contour_start->y);
@@ -579,6 +497,7 @@ int raster_draw_outline(bitmap_t *canvas, wchar_t c, font_conf_t *font,
 		}
 
 		if (is_contour_end) {
+			raster_slim_contour(canvas, contour_start);
 			j++;
 			contour_start = NULL;
 			contour_draws = 0;
@@ -661,7 +580,7 @@ int x11_processor(XEvent *event) {
 //				raster_clean(&sub, &bmp_canvas, offset_x, offset_y,
 //						advance_x / grid_size, font.ascender + font.descender,
 //						grid_size);
-				raster_scanline(&sub, bmp_raster, offset_x, offset_y,
+				raster_fill_contour(&sub, bmp_raster, offset_x, offset_y,
 						advance_x / grid_size, font.ascender + font.descender,
 						grid_size);
 			}
