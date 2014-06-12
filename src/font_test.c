@@ -1,25 +1,46 @@
 #include "wl_x11.h"
 #include "wl_text.h"
 #include "wl_raster.h"
+#include "wl_gamma.h"
+#include "wl_filter.h"
 #include <locale.h>
 #include <stdint.h>
 
-wchar_t *text = L"Black"; // meyLinux // abdfghpqy// Windows Steve 中文字体ɒɔ
+wchar_t *text = L"Windows"; // meyLinux // abdfghpqy// Windows Steve 中文字体ɒɔ
 
-int font_height = 13;
-int grid_size = 16; // in pixel
+int font_height = 15;
+int grid_size = 18; // horizontally 6 per subpixel
 #define DRAW_GRIDLINES
 //#define DRAW_OUTLINEPOINTS
 //#define FILL_CONTOURS 0
 #define FILL_CONTOURS 1
 //#define BLACK_ON_WHITE 0
 #define BLACK_ON_WHITE 1 /* or WHITE_ON_BLACK */
+float gamma_value = 1.2;
+int subpixel_rendering = 1;
 
 FT_ULong load_flags = FT_LOAD_NO_HINTING;
 //FT_ULong load_flags = FT_LOAD_NO_AUTOHINT;
 //FT_ULong load_flags = FT_LOAD_FORCE_AUTOHINT;
 
-int subpixel_rendering = 1;
+//unsigned char filter[] = { 0x18, 0x1C, 0x97, 0x1C, 0x18 }; // Mac OS X 10.8
+//float blur_filter[] = { 0.119, 0.370, 0.511, 0.370, 0.119 }; // mitchell_filter
+//float blur_filter[] = { 0.090, 0.373, 0.536, 0.373, 0.090 }; // catmull_rom_filter
+//float blur_filter[] = { -0.106, 0.244, 0.726, 0.244, -0.106 };
+//float blur_filter[] = { 0.059, 0.235, 0.412, 0.235, 0.059 };
+//float blur_filter[] = { 0., 1. / 4., 2. / 4., 1. / 4., 0. };
+//float blur_filter[] = { 1. / 17., 4. / 17., 7. / 17., 4. / 17., 1. / 17. };
+float blur_filter[] = { 1. / 16., 5. / 16., 10. / 16., 5. / 16., 1. / 16. };
+
+#define FIR5_FILTER 0
+#define CUSTOME_FILTER 1
+#define DISPLACED_FILTER 2
+int subpixel_filter_type = DISPLACED_FILTER;
+
+//unsigned char filter[] = { 15, 60, 105, 60, 15 };
+//unsigned char filter[] = { 30, 60, 85, 60, 30 };
+//	unsigned char filter[] = {0, 0, 255, 0, 0};
+//	unsigned char filter[] = {28, 56, 85, 56, 28};
 
 /* color component-value pair */
 unsigned char contour_colors[3] = { 1, 2 };
@@ -277,7 +298,7 @@ inline int raster_contour_around(unsigned char *s, int bytes_per_line) {
 // http://en.wikipedia.org/wiki/Rasterisation#Scan_conversion
 // http://en.wikipedia.org/wiki/Scanline_algorithm
 void raster_fill_contour(bitmap_t *dst, bitmap_t *src, int x, int y, int dst_w,
-		int dst_h, int grid_size) {
+		int dst_h, int grid_width, int grid_height) {
 	int dst_pixel_size = dst->bytes_per_pixel;
 	int dst_line_size = dst->bytes_per_line;
 	unsigned char *dst_line = dst->data;
@@ -288,54 +309,100 @@ void raster_fill_contour(bitmap_t *dst, bitmap_t *src, int x, int y, int dst_w,
 			+ x * src_pixel_size;
 
 	unsigned char *src_line, *s_outer, *s, *d;
-	int src_line_incr = src_line_size * grid_size;
-	int src_grid_incr = src_pixel_size * grid_size;
+	int src_line_incr = src_line_size * grid_width;
+	int src_grid_incr = src_pixel_size * grid_width;
 
-	const unsigned grid_weight = grid_size * grid_size;
-	double coverage;
-	// subpixel related variables
-	double *coverages = NULL;
-	unsigned *subpixel_sizes = NULL;
-	unsigned *subpixel_weights = NULL;
-	unsigned subpixel_width = dst_w * 3 + 4;
-	unsigned char *subpixel_data = NULL;
+	int i, j, k, l, m;
+
+	unsigned char linear2gamma[256];
+	gamma_ramp_init(linear2gamma, gamma_value);
+
+	const unsigned grid_area = grid_width * grid_height;
+	float grid_weight;
+
+	// subpixel rendering
+	int subgrid_count;
+	int subgrid_index;
+//	unsigned *subgrid_widths = NULL;
+	unsigned *subgrid_areas = NULL;
+	unsigned *subgrid_limits = NULL;
+	float *subgrid_weights = NULL;
+	unsigned char *subpixel_line = NULL; // of dst
+	unsigned subpixel_line_size;
 	if (subpixel_rendering) {
-		coverages = malloc(sizeof(double) * 3);
-		subpixel_sizes = malloc(sizeof(unsigned) * 3);
-		subpixel_weights = malloc(sizeof(int) * 3);
-		subpixel_data = malloc(subpixel_width);
-		subpixel_sizes[0] = grid_size / 3;
-		subpixel_sizes[1] = (grid_size - subpixel_sizes[0]) / 2;
-		subpixel_sizes[2] = grid_size - subpixel_sizes[0] - subpixel_sizes[1];
-		subpixel_weights[0] = subpixel_sizes[0] * grid_size;
-		subpixel_weights[1] = subpixel_sizes[1] * grid_size;
-		subpixel_weights[2] = subpixel_sizes[2] * grid_size;
-		printf("rgb size: %d,%d,%d\n", subpixel_sizes[0], subpixel_sizes[2],
-				subpixel_sizes[2]);
+		if (subpixel_filter_type == DISPLACED_FILTER) {
+			subgrid_count = 9;
+			subpixel_line_size = dst_w * subgrid_count;
+		} else {
+			subgrid_count = 3;
+			subpixel_line_size = dst_w * subgrid_count + 4;
+
+//			subgrid_widths = malloc(sizeof(unsigned) * 3);
+//			subgrid_widths[0] = grid_width / 3;
+//			subgrid_widths[1] = (grid_width - subgrid_widths[0]) / 2;
+//			subgrid_widths[2] = grid_width - subgrid_widths[0]
+//					- subgrid_widths[1];
+//
+//			subgrid_areas = malloc(sizeof(int) * 3);
+//			subgrid_areas[0] = subgrid_widths[0] * grid_height;
+//			subgrid_areas[1] = subgrid_widths[1] * grid_height;
+//			subgrid_areas[2] = subgrid_widths[2] * grid_height;
+//
+//			subgrid_weights = malloc(sizeof(double) * 3);
+//
+//			printf("subgrid_widths: %d,%d,%d\n", subgrid_widths[0],
+//					subgrid_widths[1], subgrid_widths[2]);
+		}
+
+//		subgrid_widths = malloc(sizeof(unsigned) * subgrid_count);
+		subgrid_limits = malloc(sizeof(unsigned) * subgrid_count);
+		subgrid_areas = malloc(sizeof(int) * subgrid_count);
+		subgrid_weights = malloc(sizeof(double) * subgrid_count);
+		subpixel_line = malloc(subpixel_line_size);
+		printf("subgrid_widths:");
+		j = 0; // sum
+		k = 0; // subgrid_width
+		for (i = 0; i < subgrid_count; i++) {
+			k = (grid_width - j) / (subgrid_count - i);
+			subgrid_areas[i] = k * grid_height;
+			j += k;
+			subgrid_limits[i] = j;
+			printf(" %d", k);
+		}
+		printf("\nsubgrid_limits:");
+		for (i = 0; i < subgrid_count; i++)
+			printf(" %d", subgrid_limits[i]);
+		printf("\n");
 	}
 
-	char *prev_on = malloc(grid_size);
-	char *fill_flags = malloc(grid_size);
-	int i, j, k, l, si;
+	char *prev_on = malloc(grid_height);
+	char *fill_flags = malloc(grid_height);
 	for (j = 0; j < dst_h; ++j, (dst_line += dst_line_size, src_line_outer +=
 			src_line_incr)) {
 		d = dst_line;
 		s_outer = src_line_outer;
-		memset(prev_on, 0, grid_size);
-		memset(fill_flags, 0, grid_size);
+
+		// for the whole src line
+		memset(prev_on, 0, grid_height);
+		memset(fill_flags, 0, grid_height);
 		if (subpixel_rendering)
-			memset(subpixel_data, 0, subpixel_width);
+			memset(subpixel_line, 0, subpixel_line_size);
+
 		for (i = 0; i < dst_w; ++i, (d += dst_pixel_size, s_outer +=
 				src_grid_incr)) {
-			// calculate coverage of grid (i, j)
-			if (subpixel_rendering)
-				memset(coverages, 0, sizeof(double) * 3);
-			else
-				coverage = 0;
 			src_line = s_outer;
-			for (y = 0; y < grid_size; y++, (src_line += src_line_size)) {
+
+			// calculate coverage of grid (i,j) (ie. the dst pixel (i,j))
+			if (subpixel_rendering)
+				memset(subgrid_weights, 0, sizeof(float) * subgrid_count);
+			else
+				grid_weight = 0;
+
+			for (y = 0; y < grid_height; y++, (src_line += src_line_size)) {
 				s = src_line;
-				for (x = 0; x < grid_size; x++, (s += src_pixel_size)) {
+
+				subgrid_index = 0;
+				for (x = 0; x < grid_width; x++, (s += src_pixel_size)) {
 					/* convex (up and down) curves: \_/ and /`\
 					 *     *--a (change on a)/(recover to BEFOR_ON_FILL)
 					 *    /    \
@@ -371,63 +438,154 @@ void raster_fill_contour(bitmap_t *dst, bitmap_t *src, int x, int y, int dst_w,
 							s[0] = filling_color;
 					}
 
-					if (s[0] > 0) {
-						if (subpixel_rendering) {
-							if (x >= subpixel_sizes[0] + subpixel_sizes[1])
-								coverages[2]++;
-							else if (x >= subpixel_sizes[0])
-								coverages[1]++;
-							else
-								coverages[0]++;
-						} else {
-							coverage++;
+					// finished filling current src pixel
+
+					if (x >= subgrid_limits[subgrid_index])
+						subgrid_index++;
+
+					if (s[0] == 0)
+						continue;
+
+					// accumulate grid weight
+					if (subpixel_rendering)
+						subgrid_weights[subgrid_index]++;
+					else
+						grid_weight++;
+				}
+			}
+
+			// grid weight ready
+
+			if (subpixel_rendering) {
+				for (l = 0; l < subgrid_count; l++) {
+					if (subgrid_weights[l] == 0)
+						continue;
+
+					grid_weight = subgrid_weights[l] / subgrid_areas[l];
+					if (grid_weight > 1)
+						perror("grid_weight > 1");
+//					printf("%f %.0f/%d\n", grid_weight, subgrid_weights[k], subgrid_areas[k]);
+
+					m = i * subgrid_count + l; // subpixel index
+					if (subpixel_filter_type == DISPLACED_FILTER) {
+						subpixel_line[m] = grid_weight * 255;
+					} else if (subpixel_filter_type == CUSTOME_FILTER) {
+						subpixel_line[m + 2] = grid_weight * 255;
+					} else {
+						for (k = 0; k < 5; k++) {
+							float f = subpixel_line[m + k]
+									+ grid_weight * blur_filter[k] * 255;
+							if (f < 0)
+								f = 0;
+							subpixel_line[m + k] = f > 255 ? 255 : f;
 						}
 					}
 				}
-			}
-			if (subpixel_rendering) {
-				for (k = 0; k < 3; k++) {
-					if (coverages[k] == 0)
-						continue;
-					coverage = coverages[k] / subpixel_weights[k];
-					if (coverage > 1)
-						perror("coverage > 1");
-//					printf("%f %.0f/%d\n", coverage, coverages[k], subpixel_weights[k]);
-					si = i * 3 + k; // subpixel index
-					for (l = 0; l < 5; l++)
-						subpixel_data[si + l] += coverage * subpixel_filter[l];
-				}
-//				d[0] = 0xff * coverages[2], d[1] = 0xff * coverages[1], d[2] =
-//						0xff * coverages[0];
-			} else if (coverage > 0) {
-				coverage = coverage / grid_weight;
+//				d[0] = 0xff * subgrid_weights[2], d[1] = 0xff * subgrid_weights[1], d[2] =
+//						0xff * subgrid_weights[0];
+			} else if (grid_weight > 0) {
+				grid_weight = grid_weight / grid_area;
 				if (BLACK_ON_WHITE)
-					coverage = 1 - coverage;
-				d[0] = 0xff * coverage, d[1] = 0xff * coverage, d[2] = 0xff
-						* coverage;
-//				printf("%d %d = %.0f/%.0f\n", x, y, coverage, grid_weight);
+					grid_weight = 1 - grid_weight;
+				d[0] = 0xff * grid_weight, d[1] = 0xff * grid_weight, d[2] =
+						0xff * grid_weight;
+//				printf("%d %d = %.0f/%.0f\n", x, y, grid_weight, grid_area);
 			}
-
 		}
+
+		// whole line ready
+
 		if (subpixel_rendering) {
 			d = dst_line;
-			for (i = 2; i < subpixel_width - 2;) {
-				d[2] = 0xff - subpixel_data[i++];
-				d[1] = 0xff - subpixel_data[i++];
-				d[0] = 0xff - subpixel_data[i++];
-				d += dst_pixel_size;
+
+			if (subpixel_filter_type == DISPLACED_FILTER) {
+				int i = 0;
+				unsigned char *s3i = subpixel_line, *s3i_ = NULL;
+//				unsigned char *s3i_ = NULL, *s3i = subpixel_line, *s3i1, *s3i2,
+//						*s3i3;
+				/* downsample the 9-subpixels: [RGB][RGB][RGB] to one pixel
+				 * [R_3i G_3i B_3i] [R_3i+1 G_3i+1 B_3i+1] [R_3i+2 G_3i+2 B_3i+2]
+				 * =>
+				 * [R_i G_i B_i]
+				 */
+
+				i = 0;
+				while (i < dst_w) {
+//					s3i1 = s3i + 3;
+//					s3i2 = s3i + 6;
+//					d[2] =
+//							((i == 0 ? 0 : s3i_[0]) + (unsigned) s3i[0]
+//									+ s3i1[0]) * 1. / 3.; // R_n
+//					d[1] = (s3i[1] + (unsigned) s3i1[1] + s3i2[1]) * 1. / 3.; // G_n
+//					d[0] = (s3i1[2] + (unsigned) s3i2[2]
+//							+ (i < dst_w - 1 ? s3i3[2] : 0)) * 1. / 3.; // B_n
+					d[2] = ((unsigned) (s3i_ ? s3i_[0] : 0) + s3i[0] + s3i[3])
+							* 1. / 3.;
+					d[1] = ((unsigned) s3i[1] + s3i[4] + s3i[7]) * 1. / 3.;
+					d[0] = ((unsigned) s3i[5] + s3i[8]
+							+ (i < dst_w - 1 ? s3i[11] : 0)) * 1. / 3.;
+
+//					d[0] = s3i[2];
+//					d[1] = s3i[1];
+//					d[2] = s3i[0];
+//					d[0] = ((unsigned) s3i[2] + s3i[5] + s3i[8]) / 3.;
+//					d[1] = ((unsigned) s3i[1] + s3i[4] + s3i[7]) / 3.;
+//					d[2] = ((unsigned) s3i[0] + s3i[3] + s3i[6]) / 3.;
+
+					for (k = 0; k < dst_pixel_size; k++)
+						d[k] = 0xff - linear2gamma[d[k]];
+					s3i += subgrid_count;
+					s3i_ = s3i - 3;
+					d += dst_pixel_size;
+					i++;
+				}
+			} else {
+				if (subpixel_filter_type == CUSTOME_FILTER) {
+//				unsigned char prev = subpixel_line[0], curr;
+//				for (i = 1; i < subpixel_line_size - 2; i++) {
+//					curr = subpixel_line[i];
+//					if (prev == 0 && curr > 0) {
+//						subpixel_line[i - 1] = curr / 3;
+//						subpixel_line[i] = curr - subpixel_line[i - 1];
+//					}
+//					prev = curr;
+//				}
+					unsigned char *p = subpixel_line + 2;
+					for (i = 2; i < subpixel_line_size - 2; i++) {
+						if (p[i] < 0x80)
+							continue;
+						if (p[i - 2] == 0 && p[i - 1] < 0x80) {
+							p[i - 2] = p[i] / 16. * 1;
+							p[i - 1] = p[i] / 16. * 5;
+//						p[i] = p[i] - p[i - 1] - p[i - 2];
+							p[i] = p[i] / 16.0 * 10;
+						}
+						if (p[i + 1] < 0x80 && p[i + 2] == 0) {
+							p[i + 1] = p[i] / 16. * 5;
+							p[i + 2] = p[i] / 16. * 1;
+//						p[i] = p[i] - p[i + 1] - p[i + 2];
+							p[i] = p[i] / 16.0 * 10;
+						}
+					}
+				}
+				for (i = 2; i < subpixel_line_size - 2;) {
+					d[2] = 0xff - linear2gamma[subpixel_line[i++]];
+					d[1] = 0xff - linear2gamma[subpixel_line[i++]];
+					d[0] = 0xff - linear2gamma[subpixel_line[i++]];
+					d += dst_pixel_size;
+				}
 			}
 		}
 	}
 
 	free(prev_on);
 	free(fill_flags);
-	if (coverages)
-		free(coverages);
-	if (subpixel_sizes)
-		free(subpixel_sizes);
-	if (subpixel_data)
-		free(subpixel_data);
+	if (subgrid_weights)
+		free(subgrid_weights);
+	if (subgrid_limits)
+		free(subgrid_limits);
+	if (subpixel_line)
+		free(subpixel_line);
 }
 
 int raster_draw_outline(bitmap_t *canvas, wchar_t c, font_conf_t *font,
@@ -485,6 +643,24 @@ int raster_draw_outline(bitmap_t *canvas, wchar_t c, font_conf_t *font,
 
 	if (overflow)
 		return 0;
+
+	if (0 && c == L'l') {
+//		FT_Vector p0 = { 176, 260 };//{ 181, 260 };
+//		FT_Vector p1 = { 176, 075 };//{ 181, 075 };
+//		FT_Vector p2 = { 200, 075 };//{ 204, 075 };
+//		FT_Vector p3 = { 200, 260 };//{ 204, 260 };
+		FT_Vector p0 = { 196 - 6 - 3, 260 };
+		FT_Vector p1 = { 196 - 6 - 3, 075 };
+		FT_Vector p2 = { 196 + 5 + 8, 075 };
+		FT_Vector p3 = { 196 + 5 + 8, 260 };
+		// grid of (180, 196)
+		draw_line(bmp_raster, &p0, &p1, contour_colors[0]);
+		draw_line(bmp_raster, &p1, &p2, contour_colors[0]);
+		draw_line(bmp_raster, &p2, &p3, contour_colors[0]);
+		draw_line(bmp_raster, &p3, &p0, contour_colors[0]);
+		int advance_x = glyph->advance.x >> 10;
+		return advance_x * scale;
+	}
 
 	FT_Vector *last_on = NULL;
 	FT_Vector *last_conic = NULL;
@@ -666,24 +842,31 @@ int x11_processor(XEvent *event) {
 			}
 //			raster_set_pixel(bmp_raster, 60, 172, debug_color);
 
+			if (advance_x % grid_size > 0)
+				advance_x = (advance_x / grid_size + 1) * grid_size;
+
 			if (FILL_CONTOURS) {
 //				bitmap_t sub = *bmp_raster;
 				bitmap_t sub = bmp_canvas;
 				bitmap_shift(&sub, offset_x + advance_x + 20, offset_y);
 				raster_fill_contour(&sub, bmp_raster, offset_x, offset_y,
 						advance_x / grid_size, font.ascender + font.descender,
-						grid_size);
+						grid_size, grid_size);
 			}
 
-			int max_x = min(offset_x + advance_x, bmp_canvas.rect.width);
-			int max_y = min(origin_y + font.descender * grid_size,
-					bmp_canvas.rect.height);
+			int max_x = offset_x + advance_x;
+			int max_y = origin_y + font.descender * grid_size;
+			if (max_x > bmp_canvas.rect.width || max_y > bmp_canvas.rect.height)
+				perror("text overflow");
+
+			printf("`%ls' rect: (%d,%d) (%dx%d)/(%.1fx%.1f) font %d+%d\n", text,
+					offset_x, offset_y, max_x - offset_x, max_y - offset_y,
+					(max_x - offset_x) / (double) grid_size,
+					(max_y - offset_y) / (double) grid_size, font.ascender,
+					font.descender);
+			printf("grid size: %d\n", grid_size);
 
 #ifdef DRAW_GRIDLINES
-
-			printf("bbox (%d,%d) (%d,%d) descender %d\n", offset_x, offset_y,
-					max_x, max_y, font.descender);
-
 			int x, y;
 			FT_Vector p0, p1;
 
@@ -717,12 +900,9 @@ int x11_processor(XEvent *event) {
 int main(int argc, char *argv[]) {
 	setlocale(LC_CTYPE, "en_US.UTF-8");
 
-	unsigned char filter[] = { 15, 60, 105, 60, 15 };
-//	unsigned char filter[] = {0, 0, 255, 0, 0};
-//	unsigned char filter[] = {28, 56, 85, 56, 28};
-	int i;
-	for (i = 0; i < 5; i++)
-		subpixel_filter[i] = filter[i];
+//	int i;
+//	for (i = 0; i < 5; i++)
+//		subpixel_filter[i] = filter[i];
 
 //	IPA fonts: CharisSIL-R.ttf DoulosSIL-R.ttf LinLibertine_R.otf
 	freetype_init(2, 2, 10240 * 1024, 1);
@@ -735,7 +915,7 @@ int main(int argc, char *argv[]) {
 
 	font_init(&font, font_height, 5);
 
-	x11_init(1600, 1000);
+	x11_init(1400, 400);
 
 	x11_set_title("Font Rendering");
 	x11_show_window(0, x11_processor, NULL, NULL, 0);
