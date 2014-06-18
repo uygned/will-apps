@@ -6,22 +6,25 @@
 #include <locale.h>
 #include <stdint.h>
 
-wchar_t *text = L"Windows"; // meyLinux // abdfghpqy// Windows Steve 中文字体ɒɔ
+wchar_t *text = L"Windo"; // meyLinux // abdfghpqy// Windows Steve 中文字体ɒɔ
 
 int font_height = 15;
-int grid_size = 18; // horizontally 6 per subpixel
+//int grid_size = 18; // 3 pixels, each pixel has 3 subpixels, subpixel size is 2
+int grid_size = 30; // 3 pixels, each pixel has 3 red subpixels, 6 green subpixels, 1 blue subpixels
+
 #define DRAW_GRIDLINES
 //#define DRAW_OUTLINEPOINTS
 //#define FILL_CONTOURS 0
 #define FILL_CONTOURS 1
 //#define BLACK_ON_WHITE 0
 #define BLACK_ON_WHITE 1 /* or WHITE_ON_BLACK */
-float gamma_value = 1.2;
+float gamma_value = 2.2;
 int subpixel_rendering = 1;
 
-FT_ULong load_flags = FT_LOAD_NO_HINTING;
+//FT_ULong load_flags = FT_LOAD_NO_HINTING;
 //FT_ULong load_flags = FT_LOAD_NO_AUTOHINT;
 //FT_ULong load_flags = FT_LOAD_FORCE_AUTOHINT;
+FT_ULong load_flags = FT_LOAD_TARGET_LIGHT;
 
 //unsigned char filter[] = { 0x18, 0x1C, 0x97, 0x1C, 0x18 }; // Mac OS X 10.8
 //float blur_filter[] = { 0.119, 0.370, 0.511, 0.370, 0.119 }; // mitchell_filter
@@ -35,7 +38,13 @@ float blur_filter[] = { 1. / 16., 5. / 16., 10. / 16., 5. / 16., 1. / 16. };
 #define FIR5_FILTER 0
 #define CUSTOME_FILTER 1
 #define DISPLACED_FILTER 2
-int subpixel_filter_type = DISPLACED_FILTER;
+#define DISPLACED_WEIGHTED 3
+int subpixel_filter_type = DISPLACED_WEIGHTED;
+
+// A filter design algorithm for subpixel rendering on matrix displays (2007)
+//float displaced_filter[] = { 0.33, 0.34, 0.33 };
+// Optimizing subpixel rendering using a perceptual metric (2011)
+float displaced_filter[] = { 0.3, 0.4, 0.3 };
 
 //unsigned char filter[] = { 15, 60, 105, 60, 15 };
 //unsigned char filter[] = { 30, 60, 85, 60, 30 };
@@ -320,8 +329,10 @@ void raster_fill_contour(bitmap_t *dst, bitmap_t *src, int x, int y, int dst_w,
 	const unsigned grid_area = grid_width * grid_height;
 	float grid_weight;
 
+	char rgb_weighted = subpixel_filter_type == DISPLACED_WEIGHTED;
+
 	// subpixel rendering
-	int subgrid_count;
+	int subgrid_count; // sampled bytes for one dst pixel
 	int subgrid_index;
 //	unsigned *subgrid_widths = NULL;
 	unsigned *subgrid_areas = NULL;
@@ -330,9 +341,12 @@ void raster_fill_contour(bitmap_t *dst, bitmap_t *src, int x, int y, int dst_w,
 	unsigned char *subpixel_line = NULL; // of dst
 	unsigned subpixel_line_size;
 	if (subpixel_rendering) {
-		if (subpixel_filter_type == DISPLACED_FILTER) {
-			subgrid_count = 9;
-			subpixel_line_size = dst_w * subgrid_count;
+		if (rgb_weighted) {
+			subgrid_count = grid_width / (6 + 3 + 1) * 3; // each subgrid (dst pixel) has 6R, 3G, 1B
+			subpixel_line_size = dst_w * subgrid_count + 3 * 2; // add 2 more pixels
+		} else if (subpixel_filter_type == DISPLACED_FILTER) {
+			subgrid_count = 9; // we need 3 subgrids
+			subpixel_line_size = dst_w * subgrid_count + 3 * 1; // add 1 more pixels
 		} else {
 			subgrid_count = 3;
 			subpixel_line_size = dst_w * subgrid_count + 4;
@@ -360,12 +374,14 @@ void raster_fill_contour(bitmap_t *dst, bitmap_t *src, int x, int y, int dst_w,
 		subgrid_weights = malloc(sizeof(double) * subgrid_count);
 		subpixel_line = malloc(subpixel_line_size);
 		printf("subgrid_widths:");
-		j = 0; // sum
-		k = 0; // subgrid_width
+		j = 0;
 		for (i = 0; i < subgrid_count; i++) {
-			k = (grid_width - j) / (subgrid_count - i);
-			subgrid_areas[i] = k * grid_height;
+			if (rgb_weighted)
+				k = i % 3 == 0 ? 3 : (i % 3 == 1 ? 6 : 1);
+			else
+				k = (grid_width - j) / (subgrid_count - i);
 			j += k;
+			subgrid_areas[i] = k * grid_height;
 			subgrid_limits[i] = j;
 			printf(" %d", k);
 		}
@@ -467,7 +483,8 @@ void raster_fill_contour(bitmap_t *dst, bitmap_t *src, int x, int y, int dst_w,
 //					printf("%f %.0f/%d\n", grid_weight, subgrid_weights[k], subgrid_areas[k]);
 
 					m = i * subgrid_count + l; // subpixel index
-					if (subpixel_filter_type == DISPLACED_FILTER) {
+					if (subpixel_filter_type == DISPLACED_FILTER
+							|| rgb_weighted) {
 						subpixel_line[m] = grid_weight * 255;
 					} else if (subpixel_filter_type == CUSTOME_FILTER) {
 						subpixel_line[m + 2] = grid_weight * 255;
@@ -498,9 +515,9 @@ void raster_fill_contour(bitmap_t *dst, bitmap_t *src, int x, int y, int dst_w,
 		if (subpixel_rendering) {
 			d = dst_line;
 
-			if (subpixel_filter_type == DISPLACED_FILTER) {
+			if (subpixel_filter_type == DISPLACED_FILTER || rgb_weighted) {
 				int i = 0;
-				unsigned char *s3i = subpixel_line, *s3i_ = NULL;
+				unsigned char *s3i = subpixel_line, r_prev = 0;
 //				unsigned char *s3i_ = NULL, *s3i = subpixel_line, *s3i1, *s3i2,
 //						*s3i3;
 				/* downsample the 9-subpixels: [RGB][RGB][RGB] to one pixel
@@ -519,11 +536,18 @@ void raster_fill_contour(bitmap_t *dst, bitmap_t *src, int x, int y, int dst_w,
 //					d[1] = (s3i[1] + (unsigned) s3i1[1] + s3i2[1]) * 1. / 3.; // G_n
 //					d[0] = (s3i1[2] + (unsigned) s3i2[2]
 //							+ (i < dst_w - 1 ? s3i3[2] : 0)) * 1. / 3.; // B_n
-					d[2] = ((unsigned) (s3i_ ? s3i_[0] : 0) + s3i[0] + s3i[3])
-							* 1. / 3.;
-					d[1] = ((unsigned) s3i[1] + s3i[4] + s3i[7]) * 1. / 3.;
-					d[0] = ((unsigned) s3i[5] + s3i[8]
-							+ (i < dst_w - 1 ? s3i[11] : 0)) * 1. / 3.;
+//					d[2] = ((unsigned) r_prev + s3i[0] + s3i[3]) * 1. / 3.;
+//					d[1] = ((unsigned) s3i[1] + s3i[4] + s3i[7]) * 1. / 3.;
+//					d[0] = ((unsigned) s3i[5] + s3i[8] + s3i[11]) * 1. / 3.;
+					d[2] = displaced_filter[0] * r_prev
+							+ displaced_filter[1] * s3i[0]  // (Rgb) 3n-th src pixel
+							+ displaced_filter[2] * s3i[3];
+					d[1] = displaced_filter[0] * s3i[1]
+							+ displaced_filter[1] * s3i[4]  // rgb(rGb) (3n+1)-th src pixel
+							+ displaced_filter[2] * s3i[7];
+					d[0] = displaced_filter[0] * s3i[5]
+							+ displaced_filter[1] * s3i[8]  // rgbrgb(rgB) (3n+2)-th src pixel
+							+ displaced_filter[2] * s3i[11];
 
 //					d[0] = s3i[2];
 //					d[1] = s3i[1];
@@ -534,8 +558,9 @@ void raster_fill_contour(bitmap_t *dst, bitmap_t *src, int x, int y, int dst_w,
 
 					for (k = 0; k < dst_pixel_size; k++)
 						d[k] = 0xff - linear2gamma[d[k]];
+
+					r_prev = s3i[6];
 					s3i += subgrid_count;
-					s3i_ = s3i - 3;
 					d += dst_pixel_size;
 					i++;
 				}
@@ -915,7 +940,7 @@ int main(int argc, char *argv[]) {
 
 	font_init(&font, font_height, 5);
 
-	x11_init(1400, 400);
+	x11_init(1500, 600);
 
 	x11_set_title("Font Rendering");
 	x11_show_window(0, x11_processor, NULL, NULL, 0);
