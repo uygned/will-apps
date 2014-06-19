@@ -10,6 +10,19 @@
  * @version 1.1
 */
 
+#include "bresenham_rasterizer.h"
+#include <stdlib.h>
+#include <math.h>
+#include <assert.h>
+
+typedef char bool;
+
+#define min(a, b) ((a) < (b) ? (a) : (b))
+#define max(a, b) ((a) > (b) ? (a) : (b))
+
+// forward declares
+void plotRotatedEllipseRect(int x0, int y0, int x1, int y1, long zd);
+
 void plotLine(int x0, int y0, int x1, int y1)
 {
    int dx =  abs(x1-x0), sx = x0<x1 ? 1 : -1;
@@ -430,7 +443,8 @@ void plotLineAA(int x0, int y0, int x1, int y1)
       if (2*e2 <= dy) {                                             /* y step */
          if (y0 == y1) break;
          if (dx-e2 < 0xff0000l) setPixelAA(x2+sx,y0,(dx-e2)>>16);
-         err += dx; y0 += sy; 
+         err += dx; y0 += sy;
+      }
     }
 }
 
