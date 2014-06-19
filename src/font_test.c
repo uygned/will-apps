@@ -3,6 +3,7 @@
 #include "wl_raster.h"
 #include "wl_gamma.h"
 #include "wl_filter.h"
+#include "wl_subpixel_filter.h"
 #include <locale.h>
 #include <stdint.h>
 
@@ -15,7 +16,7 @@ int font_height = 15;
 int grid_size = 30;
 
 #define DRAW_GRIDLINES
-//#define DRAW_OUTLINEPOINTS
+//#define LABEL_CONTOUR_POINTS
 //#define FILL_CONTOURS 0
 #define FILL_CONTOURS 1
 //#define BLACK_ON_WHITE 0
@@ -44,9 +45,9 @@ float fringe_filter[] = { 1. / 16., 5. / 16., 10. / 16., 5. / 16., 1. / 16. };
 int subpixel_filter_type = DISPLACED_WEIGHTED;
 
 // A filter design algorithm for subpixel rendering on matrix displays (2007)
-//float displaced_filter[] = { 0.33, 0.34, 0.33 };
+//float displaced_filter_weights[] = { 0.33, 0.34, 0.33 };
 // Optimizing subpixel rendering using a perceptual metric (2011)
-float displaced_filter[] = { 0.3, 0.4, 0.3 };
+float displaced_filter_weights[] = { 0.3, 0.4, 0.3 };
 
 //unsigned char filter[] = { 15, 60, 105, 60, 15 };
 //unsigned char filter[] = { 30, 60, 85, 60, 30 };
@@ -159,6 +160,10 @@ inline void raster_copy_contour(bitmap_t *dst, bitmap_t *src, int width,
 }
 
 inline int raster_slim_contour(bitmap_t *canvas, FT_Vector *p0) {
+	if (p0->x < 0 || p0->x >= canvas->rect.width || p0->y < 0
+			|| p0->y >= canvas->rect.height)
+		return 0;
+
 	unsigned char *s = canvas->data + p0->y * canvas->bytes_per_line
 			+ p0->x * canvas->bytes_per_pixel;
 	unsigned char *t = s - canvas->bytes_per_line;
@@ -308,7 +313,7 @@ inline int raster_contour_around(unsigned char *s, int bytes_per_line) {
 
 // http://en.wikipedia.org/wiki/Rasterisation#Scan_conversion
 // http://en.wikipedia.org/wiki/Scanline_algorithm
-void raster_fill_contour(bitmap_t *dst, bitmap_t *src, int x, int y, int dst_w,
+void raster_fill_contours(bitmap_t *dst, bitmap_t *src, int x, int y, int dst_w,
 		int dst_h, int grid_width, int grid_height) {
 	int i, j, k, l, m;
 
@@ -497,42 +502,18 @@ void raster_fill_contour(bitmap_t *dst, bitmap_t *src, int x, int y, int dst_w,
 
 		if (subpixel_rendering) {
 			if (subpixel_filter_type == DISPLACED_FILTER || rgb_weighted) {
-				/* Downsamples the oversampled 3 pixels to one pixel (9 subpixels to 3 subpixels).
-				 * [R_3i G_3i B_3i] [R_3i+1 G_3i+1 B_3i+1] [R_3i+2 G_3i+2 B_3i+2]
-				 * =>
-				 * [R_i G_i B_i]
-				 */
-
+				displaced_downsample(d, subpixel_line, dst_w,
+						displaced_filter_weights);
 				i = 0;
-				unsigned char *s3i = subpixel_line, r_prev = 0;
-				while (i < dst_w) {
-//					d[2] = ((unsigned) r_prev + s3i[0] + s3i[3]) * 1. / 3.;
-//					d[1] = ((unsigned) s3i[1] + s3i[4] + s3i[7]) * 1. / 3.;
-//					d[0] = ((unsigned) s3i[5] + s3i[8] + s3i[11]) * 1. / 3.;
-					d[2] = displaced_filter[0] * r_prev
-							+ displaced_filter[1] * s3i[0] // (Rgb) 3n-th src pixel
-							+ displaced_filter[2] * s3i[3];
-					d[1] = displaced_filter[0] * s3i[1]
-							+ displaced_filter[1] * s3i[4] // rgb(rGb) (3n+1)-th src pixel
-							+ displaced_filter[2] * s3i[7];
-					d[0] = displaced_filter[0] * s3i[5]
-							+ displaced_filter[1] * s3i[8] // rgbrgb(rgB) (3n+2)-th src pixel
-							+ displaced_filter[2] * s3i[11];
-
-//					d[0] = s3i[2];
-//					d[1] = s3i[1];
-//					d[2] = s3i[0];
-//					d[0] = ((unsigned) s3i[2] + s3i[5] + s3i[8]) / 3.;
-//					d[1] = ((unsigned) s3i[1] + s3i[4] + s3i[7]) / 3.;
-//					d[2] = ((unsigned) s3i[0] + s3i[3] + s3i[6]) / 3.;
-
-					for (k = 0; k < dst_pixel_size; k++)
-						d[k] = linear2srgb[0xff - d[k]];
-
-					r_prev = s3i[6];
-					s3i += subgrid_count;
+				while (i++ < dst_w) {
+//					for (k = 0; k < dst_pixel_size; k++)
+//						d[k] = linear2srgb[0xff - d[k]];
+//					assert(dst_pixel_size >= 3);
+					k = d[0];
+					d[0] = linear2srgb[0xff - d[2]];
+					d[1] = linear2srgb[0xff - d[1]];
+					d[2] = linear2srgb[0xff - k];
 					d += dst_pixel_size;
-					i++;
 				}
 			} else {
 				if (subpixel_filter_type == CUSTOME_FILTER) {
@@ -574,41 +555,18 @@ void raster_fill_contour(bitmap_t *dst, bitmap_t *src, int x, int y, int dst_w,
 		free(subpixel_line);
 }
 
-int raster_draw_outline(bitmap_t *canvas, wchar_t c, font_conf_t *font,
-		FT_ULong load_flags, int origin_x, int origin_y, double scale) {
-	FT_Face face = font->face;
-	FT_UInt glyph_index = FT_Get_Char_Index(face, (FT_ULong) c);
-	if (glyph_index == 0) {
-		printf("error glyph_index\n");
-		return -1;
-	}
-
-	FTC_Scaler scaler = &font->scaler;
-	int w = scaler->width;
-	scaler->width = 0;
-	FT_Glyph glyph;
-	if (FTC_ImageCache_LookupScaler(ft_cache, scaler, load_flags, glyph_index,
-			&glyph, NULL)) {
-		printf("error FTC_ImageCache_LookupScaler\n");
-		scaler->width = w;
-		return -1;
-	}
-	scaler->width = w;
-
-	if (glyph->format != FT_GLYPH_FORMAT_OUTLINE)
-		return -1;
-
-	FT_OutlineGlyph o = (FT_OutlineGlyph) glyph;
-	FT_Outline *outline = &o->outline;
-
-	char buf[2];
-	buf[1] = 0;
-
+void raster_draw_contours(bitmap_t *canvas, FT_Outline *outline, int origin_x,
+		int origin_y, float scale) {
+	FT_Vector points[outline->n_points];
+	FT_Vector *curr;
+	int min_x = 0, max_x = 0, min_y = 0, max_y = 0;
 	int i, j = 0;
-	int max_x = 0;
-	int overflow = 0;
 	for (i = 0; i < outline->n_points; i++) {
-		FT_Vector *curr = &outline->points[i];
+		curr = &outline->points[i];
+		points[i].x = curr->x;
+		points[i].y = curr->y;
+		curr = &points[i];
+
 		if (scale != 0 && scale != 1) {
 			curr->x *= scale;
 			curr->y *= scale;
@@ -616,60 +574,50 @@ int raster_draw_outline(bitmap_t *canvas, wchar_t c, font_conf_t *font,
 
 		curr->x += origin_x;
 		curr->y = origin_y - curr->y;
+
 		if (curr->x > max_x)
 			max_x = curr->x;
-
-		if (curr->x < 0 || curr->x >= canvas->rect.width || curr->y < 0
-				|| curr->y >= canvas->rect.height) {
-			printf("overflow: %ld,%ld\n", curr->x, curr->y);
-			overflow = 1;
-			break;
-		}
+		else if (curr->x < min_x)
+			min_x = curr->x;
+		if (curr->y > max_y)
+			max_y = curr->y;
+		else if (curr->y < min_y)
+			min_y = curr->y;
 	}
 
-	if (overflow)
-		return 0;
-
-	if (0 && c == L'l') {
-//		FT_Vector p0 = { 176, 260 };//{ 181, 260 };
-//		FT_Vector p1 = { 176, 075 };//{ 181, 075 };
-//		FT_Vector p2 = { 200, 075 };//{ 204, 075 };
-//		FT_Vector p3 = { 200, 260 };//{ 204, 260 };
-		FT_Vector p0 = { 196 - 6 - 3, 260 };
-		FT_Vector p1 = { 196 - 6 - 3, 075 };
-		FT_Vector p2 = { 196 + 5 + 8, 075 };
-		FT_Vector p3 = { 196 + 5 + 8, 260 };
-		// grid of (180, 196)
-		draw_line(bmp_raster, &p0, &p1, contour_colors[0]);
-		draw_line(bmp_raster, &p1, &p2, contour_colors[0]);
-		draw_line(bmp_raster, &p2, &p3, contour_colors[0]);
-		draw_line(bmp_raster, &p3, &p0, contour_colors[0]);
-		int advance_x = glyph->advance.x >> 10;
-		return advance_x * scale;
+	if (min_x < 0 || max_x >= canvas->rect.width || min_y < 0
+			|| max_y >= canvas->rect.height) {
+		printf("overflow: %d,%d %d,%d\n", min_x, max_x, min_y, max_y);
+		return;
 	}
 
+#ifdef DEBUG
+	char tag_mode = FT_CURVE_TAG_ON | FT_CURVE_TAG_CONIC | FT_CURVE_TAG_CUBIC;
+	char *tags[] = {"CONIC", "ON", "CUBIC"};
+	char buf[2];
+	buf[1] = 0;
+#endif
+
+	int tag;
 	FT_Vector *last_on = NULL;
 	FT_Vector *last_conic = NULL;
 	FT_Vector virtual_on;
 	FT_Vector temp;
-
-	int contour_draws = 0;
-	char tag_mode = FT_CURVE_TAG_ON | FT_CURVE_TAG_CONIC | FT_CURVE_TAG_CUBIC;
-	char *tags[] = { "CONIC", "ON", "CUBIC" };
 	FT_Vector *contour_start = NULL;
 	int is_contour_end = 0;
+	int contour_draws = 0;
 	for (i = 0; i < outline->n_points; i++) {
-		int tag = outline->tags[i];
-		FT_Vector *curr = &outline->points[i];
-		// TODO if (curr == NULL)
+		curr = &points[i];
+		tag = outline->tags[i];
 
 		if (tag & FT_CURVE_TAG_HAS_SCANMODE)
 			printf("FT_CURVE_TAG_HAS_SCANMODE\n");
 
-		// label the control point
+#ifdef DEBUG
 		buf[0] = i % 2 == 0 ? (char) ('A' + i / 2) : (char) ('a' + i / 2);
 		printf("C%d %s(%d) %03ld,%03ld %c", j, tags[tag & tag_mode], tag,
 				curr->x, curr->y, buf[0]);
+#endif
 
 		if (contour_start == NULL)
 			contour_start = curr;
@@ -682,7 +630,9 @@ int raster_draw_outline(bitmap_t *canvas, wchar_t c, font_conf_t *font,
 		// http://freetype.org/freetype2/docs/reference/ft2-outline_processing.html#FT_Outline
 		if (tag & FT_CURVE_TAG_ON) {
 			if (last_on) {
+#ifdef DEBUG
 				printf(" |%s", last_conic ? "conic" : "line");
+#endif
 				if (last_conic) {
 					draw_conic(canvas, last_on, last_conic, curr,
 							contour_colors[contour_draws++ % 2]);
@@ -725,8 +675,10 @@ int raster_draw_outline(bitmap_t *canvas, wchar_t c, font_conf_t *font,
 							contour_colors[contour_draws++ % 2]);
 					if (contour_draws > 1)
 						raster_slim_contour(canvas, &temp);
+#ifdef DEBUG
 					printf(" |on/conic %ld %ld - %ld %ld", temp.x, temp.y,
 							virtual_on.x, virtual_on.y);
+#endif
 				}
 				last_on = &virtual_on;
 			}
@@ -737,8 +689,10 @@ int raster_draw_outline(bitmap_t *canvas, wchar_t c, font_conf_t *font,
 					if (contour_draws > 1)
 						raster_slim_contour(canvas, last_on);
 				}
+#ifdef DEBUG
 				printf(" |on/conic %ld %ld - %ld %ld", last_on->x, last_on->y,
 						contour_start->x, contour_start->y);
+#endif
 				last_on = NULL;
 				last_conic = NULL;
 			} else {
@@ -751,12 +705,14 @@ int raster_draw_outline(bitmap_t *canvas, wchar_t c, font_conf_t *font,
 			j++;
 			contour_start = NULL;
 			contour_draws = 0;
+#ifdef DEBUG
 			printf(" *\n");
 		} else {
 			printf("\n");
+#endif
 		}
 
-#ifdef DRAW_OUTLINEPOINTS
+#ifdef LABEL_CONTOUR_POINTS
 		rect_init(&rect, curr->x, curr->y, font->x_ppem_26_6 >> 6,
 				font->ascender + font->descender);
 		glyph_run_init(&grun, 0, 0);
@@ -765,14 +721,6 @@ int raster_draw_outline(bitmap_t *canvas, wchar_t c, font_conf_t *font,
 		free(label);
 #endif
 	}
-
-	printf("`%lc' #contour=%d #point=%d max_x=%d\n", c, outline->n_contours,
-			outline->n_points, max_x);
-
-	int advance_x = glyph->advance.x >> 10;
-//	if (advance_x % 64 != 0)
-//		advance_x = (advance_x / 64 + 1) * 64; // round to integral grids
-	return advance_x * scale;
 }
 
 int x11_processor(XEvent *event) {
@@ -816,15 +764,27 @@ int x11_processor(XEvent *event) {
 			font.face = face;
 			font.scaler = scaler;
 		} else {
-			double grid_scale = grid_size / 64.0;
+			float grid_scale = grid_size / 64.0;
 			int offset_x = 20;
 			int offset_y = 20;
 			int origin_y = offset_y + font.ascender * grid_size;
 
 			int i, advance_x = 0;
 			for (i = 0; i < wcslen(text); i++) {
-				advance_x += raster_draw_outline(bmp_raster, text[i], &font,
-						load_flags, offset_x + advance_x, origin_y, grid_scale);
+				FT_Glyph glyph = glyph_get(text[i], &font, load_flags);
+				if (glyph->format != FT_GLYPH_FORMAT_OUTLINE)
+					continue;
+
+				FT_OutlineGlyph o = (FT_OutlineGlyph) glyph;
+				FT_Outline *outline = &o->outline;
+
+				raster_draw_contours(bmp_raster, outline, offset_x + advance_x,
+						origin_y, grid_scale);
+				printf("`%lc' #contour=%d #point=%d\n", text[i],
+						outline->n_contours, outline->n_points);
+
+				int advance = glyph->advance.x >> 10;
+				advance_x += advance * grid_scale;
 			}
 //			raster_set_pixel(bmp_raster, 60, 172, debug_color);
 
@@ -835,9 +795,22 @@ int x11_processor(XEvent *event) {
 //				bitmap_t sub = *bmp_raster;
 				bitmap_t sub = bmp_canvas;
 				bitmap_shift(&sub, offset_x + advance_x + 20, offset_y);
-				raster_fill_contour(&sub, bmp_raster, offset_x, offset_y,
+				raster_fill_contours(&sub, bmp_raster, offset_x, offset_y,
 						advance_x / grid_size, font.ascender + font.descender,
 						grid_size, grid_size);
+			}
+
+			if (1) {
+				unsigned char weights[] = { 0, 0, 0xff, 0, 0 };
+				FT_Library_SetLcdFilterWeights(ft_library, weights);
+				font.load_flags = load_flags;
+				font.render_mode = FT_RENDER_MODE_LCD;
+				font.scaler.height = font_height;
+				font.scaler.width = font.scaler.height * 3;
+				glyph_run_init(&grun, 0, 0);
+				rect_init(&rect, offset_x + advance_x + 20, offset_y + 100, 100,
+						100);
+				text_draw(&bmp_canvas, text, &font, &rect, &grun);
 			}
 
 			int max_x = offset_x + advance_x;
@@ -911,3 +884,20 @@ int main(int argc, char *argv[]) {
 
 	return EXIT_SUCCESS;
 }
+
+//if (0 && c == L'l') {
+////		FT_Vector p0 = { 176, 260 };//{ 181, 260 };
+////		FT_Vector p1 = { 176, 075 };//{ 181, 075 };
+////		FT_Vector p2 = { 200, 075 };//{ 204, 075 };
+////		FT_Vector p3 = { 200, 260 };//{ 204, 260 };
+//	FT_Vector p0 = { 196 - 6 - 3, 260 };
+//	FT_Vector p1 = { 196 - 6 - 3, 075 };
+//	FT_Vector p2 = { 196 + 5 + 8, 075 };
+//	FT_Vector p3 = { 196 + 5 + 8, 260 };
+//	// grid of (180, 196)
+//	draw_line(bmp_raster, &p0, &p1, contour_colors[0]);
+//	draw_line(bmp_raster, &p1, &p2, contour_colors[0]);
+//	draw_line(bmp_raster, &p2, &p3, contour_colors[0]);
+//	draw_line(bmp_raster, &p3, &p0, contour_colors[0]);
+//	return;
+//}
