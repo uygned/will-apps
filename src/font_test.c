@@ -30,13 +30,13 @@ int subpixel_rendering = 1;
 FT_ULong load_flags = FT_LOAD_TARGET_LIGHT;
 
 //unsigned char filter[] = { 0x18, 0x1C, 0x97, 0x1C, 0x18 }; // Mac OS X 10.8
-//float fringe_filter[] = { 0.119, 0.370, 0.511, 0.370, 0.119 }; // mitchell_filter
-//float fringe_filter[] = { 0.090, 0.373, 0.536, 0.373, 0.090 }; // catmull_rom_filter
-//float fringe_filter[] = { -0.106, 0.244, 0.726, 0.244, -0.106 };
-//float fringe_filter[] = { 0.059, 0.235, 0.412, 0.235, 0.059 };
-//float fringe_filter[] = { 0., 1. / 4., 2. / 4., 1. / 4., 0. };
-//float fringe_filter[] = { 1. / 17., 4. / 17., 7. / 17., 4. / 17., 1. / 17. };
-float fringe_filter[] = { 1. / 16., 5. / 16., 10. / 16., 5. / 16., 1. / 16. };
+//float fir5_filter[] = { 0.119, 0.370, 0.511, 0.370, 0.119 }; // mitchell_filter
+//float fir5_filter[] = { 0.090, 0.373, 0.536, 0.373, 0.090 }; // catmull_rom_filter
+//float fir5_filter[] = { -0.106, 0.244, 0.726, 0.244, -0.106 };
+//float fir5_filter[] = { 0.059, 0.235, 0.412, 0.235, 0.059 };
+//float fir5_filter[] = { 0., 1. / 4., 2. / 4., 1. / 4., 0. };
+//float fir5_filter[] = { 1. / 17., 4. / 17., 7. / 17., 4. / 17., 1. / 17. };
+float fir5_filter[] = { 1. / 16., 5. / 16., 10. / 16., 5. / 16., 1. / 16. };
 
 #define FIR5_FILTER 0
 #define CUSTOME_FILTER 1
@@ -107,6 +107,15 @@ inline void bitmap_init(bitmap_t *bmp, rect_s *rect, int bytes_per_pixel) {
 	bmp->bytes_per_pixel = bytes_per_pixel;
 	bmp->bytes_per_line = bmp->bytes_per_pixel * rect->width;
 	bmp->data = calloc(1, bmp->bytes_per_line * rect->height);
+	if (!bmp->data)
+		perror("bitmap_init");
+	bmp->data += rect->top * bmp->bytes_per_line
+			+ rect->left * bmp->bytes_per_pixel;
+}
+
+inline void bitmap_free(bitmap_t *bmp) {
+	free(bmp->data);
+	free(bmp);
 }
 
 void bitmap_shift(bitmap_t *bmp, int shift_x, int shift_y) {
@@ -127,7 +136,7 @@ inline void raster_set_pixel(bitmap_t *r, int x, int y, unsigned char color) {
 	d[0] = color;
 }
 
-inline int raster_on_contour(unsigned char *s) {
+inline int raster_contour_on(unsigned char *s) {
 	return s[0] == contour_colors[0] || s[0] == contour_colors[1];
 }
 
@@ -169,19 +178,19 @@ inline int raster_slim_contour(bitmap_t *canvas, FT_Vector *p0) {
 	unsigned char *t = s - canvas->bytes_per_line;
 
 	// line above
-	int a = raster_on_contour(t);
-	int al = raster_on_contour(t - canvas->bytes_per_pixel);
-	int ar = raster_on_contour(t + canvas->bytes_per_pixel);
+	int a = raster_contour_on(t);
+	int al = raster_contour_on(t - canvas->bytes_per_pixel);
+	int ar = raster_contour_on(t + canvas->bytes_per_pixel);
 
 	// line below
 	t = s + canvas->bytes_per_line;
-	int b = raster_on_contour(t);
-	int bl = raster_on_contour(t - canvas->bytes_per_pixel);
-	int br = raster_on_contour(t + canvas->bytes_per_pixel);
+	int b = raster_contour_on(t);
+	int bl = raster_contour_on(t - canvas->bytes_per_pixel);
+	int br = raster_contour_on(t + canvas->bytes_per_pixel);
 
 	// left and right
-	int l = raster_on_contour(s - canvas->bytes_per_pixel);
-	int r = raster_on_contour(s + canvas->bytes_per_pixel);
+	int l = raster_contour_on(s - canvas->bytes_per_pixel);
+	int r = raster_contour_on(s + canvas->bytes_per_pixel);
 
 	char slim = 0;
 	if (!(a || al || ar)) { // no above, growing down
@@ -298,10 +307,10 @@ inline int raster_contour_around(unsigned char *s, int bytes_per_line) {
 	int bytes_per_pixel = 1;
 	unsigned char *a = s - bytes_per_line;
 	unsigned char *b = s + bytes_per_line;
-	int above_on = raster_on_contour(a - bytes_per_pixel)
-			|| raster_on_contour(a) || raster_on_contour(a + bytes_per_pixel);
-	int below_on = raster_on_contour(b - bytes_per_pixel)
-			|| raster_on_contour(b) || raster_on_contour(b + bytes_per_pixel);
+	int above_on = raster_contour_on(a - bytes_per_pixel)
+			|| raster_contour_on(a) || raster_contour_on(a + bytes_per_pixel);
+	int below_on = raster_contour_on(b - bytes_per_pixel)
+			|| raster_contour_on(b) || raster_contour_on(b + bytes_per_pixel);
 	if (above_on && below_on)
 		return 0; // return PREV_ON_ABOVE | PREV_ON_BELOW;
 	if (above_on)
@@ -313,100 +322,107 @@ inline int raster_contour_around(unsigned char *s, int bytes_per_line) {
 
 // http://en.wikipedia.org/wiki/Rasterisation#Scan_conversion
 // http://en.wikipedia.org/wiki/Scanline_algorithm
-void raster_fill_contours(bitmap_t *dst, bitmap_t *src, int x, int y, int dst_w,
-		int dst_h, int grid_width, int grid_height) {
-	int i, j, k, l, m;
+void raster_fill_contours(bitmap_t *dst, bitmap_t *src, int src_x, int src_y,
+		int dst_w, int dst_h, int grid_width, int grid_height) {
+	int src_line_size = src->bytes_per_line;
+	int src_pixel_size = src->bytes_per_pixel;
+	unsigned char *src_line_ = src->data + src_y * src_line_size
+			+ src_x * src_pixel_size;
 
-	int dst_pixel_size = dst->bytes_per_pixel;
 	int dst_line_size = dst->bytes_per_line;
+	int dst_pixel_size = dst->bytes_per_pixel;
 	unsigned char *dst_line = dst->data;
 
-	int src_pixel_size = 1; // src->bytes_per_pixel;
-	int src_line_size = src->bytes_per_line;
-	unsigned char *src_line_outer = src->data + y * src_line_size
-			+ x * src_pixel_size;
+	int src_line_size_ = src_line_size * grid_height;
+	int src_pixel_size_ = src_pixel_size * grid_width;
 
-	unsigned char *src_line, *s_outer, *s, *d;
-	int src_line_incr = src_line_size * grid_width;
-	int src_grid_incr = src_pixel_size * grid_width;
+	int i, j, k;
+	unsigned char *src_line, *s_, *s, *d;
 
 	unsigned char linear2srgb[256];
 	gamma_linear2srgb(linear2srgb, gamma_value);
 
-	const unsigned grid_area = grid_width * grid_height;
-	float grid_weight;
+	unsigned grid_area = grid_width * grid_height;
+	float weight;
 
 	char rgb_weighted = subpixel_filter_type == DISPLACED_WEIGHTED;
 
-	// subpixel rendering
-	int subgrid_count; // how many subpixels we want from a grid
-	int subgrid_index;
-//	unsigned *subgrid_widths = NULL;
-	unsigned *subgrid_areas = NULL;
-	unsigned *subgrid_limits = NULL;
-	float *subgrid_weights = NULL;
-	unsigned char *subpixel_line = NULL; // of dst
+	/* subpixel rendering via grid partitioning, one grid partition corresponds one subpixel */
+	int part_count = 0;
+	unsigned *part_ends = NULL;
+	unsigned *part_areas = NULL;
+	float *part_weights = NULL;
+	unsigned char *subpixel_line = NULL;
 	unsigned subpixel_line_size;
 	if (subpixel_rendering) {
-		if (rgb_weighted) {
-			subgrid_count = grid_width / (6 + 3 + 1) * 3; // each subgrid (dst pixel) has 6R, 3G, 1B
-			subpixel_line_size = dst_w * subgrid_count + 3 * 2; // add 2 more pixels
-		} else if (subpixel_filter_type == DISPLACED_FILTER) {
-			subgrid_count = 9; // we need 3 subgrids
-			subpixel_line_size = dst_w * subgrid_count + 3 * 1; // add 1 more pixels
+		if (subpixel_filter_type == DISPLACED_FILTER || rgb_weighted) {
+			/* 3 pixels per grid are required to do displaced downsampling */
+			part_count = 9;
+			/* partition areas for one pixel should follow P(R):P(G):P(B)=3:6:1 */
+			if (rgb_weighted && grid_width < (3 + 6 + 1) * 3)
+				perror("error DISPLACED_WEIGHTED");
+			subpixel_line_size = dst_w * part_count;
 		} else {
-			subgrid_count = 3;
-			subpixel_line_size = dst_w * subgrid_count + 4; // left and right margin of 2 subpixels each
+			/* subpixel rendering one pixel per grid */
+			part_count = 3;
+			/* add 2 subpixels on both left side and right side for FIR5 filtering */
+			subpixel_line_size = dst_w * part_count + 4;
 		}
 
-		subgrid_limits = malloc(sizeof(unsigned) * subgrid_count);
-		subgrid_areas = malloc(sizeof(int) * subgrid_count);
-		subgrid_weights = malloc(sizeof(double) * subgrid_count);
+		part_ends = malloc(sizeof(unsigned) * part_count);
+		part_areas = malloc(sizeof(unsigned) * part_count);
+		part_weights = malloc(sizeof(float) * part_count);
 		subpixel_line = malloc(subpixel_line_size);
-		printf("subgrid_widths:");
+
+		printf("partition widths:");
 		j = 0;
-		for (i = 0; i < subgrid_count; i++) {
+		for (i = 0; i < part_count; i++) {
 			if (rgb_weighted)
 				k = i % 3 == 0 ? 3 : (i % 3 == 1 ? 6 : 1);
 			else
-				k = (grid_width - j) / (subgrid_count - i);
+				k = (grid_width - j) / (part_count - i);
 			j += k;
-			subgrid_areas[i] = k * grid_height;
-			subgrid_limits[i] = j;
-			printf(" %d", k);
+			part_areas[i] = k * grid_height;
+			part_ends[i] = j;
+			printf(" %02d", k);
 		}
-		printf("\nsubgrid_limits:");
-		for (i = 0; i < subgrid_count; i++)
-			printf(" %d", subgrid_limits[i]);
+		printf("\npartition ends:  ");
+		for (i = 0; i < part_count; i++)
+			printf(" %02d", part_ends[i]);
 		printf("\n");
 	}
 
-	char *prev_on = malloc(grid_height);
-	char *fill_flags = malloc(grid_height);
-	for (j = 0; j < dst_h; ++j, (dst_line += dst_line_size, src_line_outer +=
-			src_line_incr)) {
+	char *prev = malloc(grid_height);
+	char *fill = malloc(grid_height);
+	int gj, gi;
+	for (gj = 0; gj < dst_h; gj++, src_line_ += src_line_size_, dst_line +=
+			dst_line_size) {
 		d = dst_line;
-		s_outer = src_line_outer;
+		s_ = src_line_;
 
-		memset(prev_on, 0, grid_height);
-		memset(fill_flags, 0, grid_height);
-		if (subpixel_rendering)
+		memset(prev, 0, grid_height);
+		memset(fill, 0, grid_height);
+		if (subpixel_line)
 			memset(subpixel_line, 0, subpixel_line_size);
 
-		for (i = 0; i < dst_w; ++i, (s_outer += src_grid_incr)) {
-			src_line = s_outer;
+		for (gi = 0; gi < dst_w; gi++, s_ += src_pixel_size_) {
+			src_line = s_;
 
-			// calculate coverage of grid (i,j) (ie. the dst pixel (i,j))
-			if (subpixel_rendering)
-				memset(subgrid_weights, 0, sizeof(float) * subgrid_count);
+			if (part_weights)
+				memset(part_weights, 0, sizeof(float) * part_count);
 			else
-				grid_weight = 0;
+				weight = 0;
 
-			for (y = 0; y < grid_height; y++, (src_line += src_line_size)) {
+			for (j = 0; j < grid_height; j++, src_line += src_line_size) {
 				s = src_line;
+				k = 0; /* partition index */
+				for (i = 0; i < grid_width; i++, s += src_pixel_size) {
+					if (i >= part_ends[k])
+						k++;
 
-				subgrid_index = 0;
-				for (x = 0; x < grid_width; x++, (s += src_pixel_size)) {
+//					if (gi == 5 && gj == 7 && i == 2 && j == 5)
+//						s[0] = debug_color;
+
 					/* convex (up and down) curves: \_/ and /`\
 					 *     *--a (change on a)/(recover to BEFOR_ON_FILL)
 					 *    /    \
@@ -414,91 +430,78 @@ void raster_fill_contours(bitmap_t *dst, bitmap_t *src, int x, int y, int dst_w,
 					 *  /  /  \  \
 					 * *--*    *--*
 					 */
-//					if (i == 5 && j == 7 && x == 2 && y == 5)
-//						s[0] = debug_color;
-					if (raster_on_contour(s)) {
-						if (!prev_on[y]) {
+					if (raster_contour_on(s)) {
+						if (!prev[j]) {
 							//  (off) on
-							prev_on[y] = PREV_ON
-									| (fill_flags[y] ? BEFOR_ON_FILL : 0);
-							int around_on = raster_contour_around(s,
-									src_line_size);
-							prev_on[y] |= around_on;
-							fill_flags[y] = !fill_flags[y];
+							prev[j] = PREV_ON | (fill[j] ? BEFOR_ON_FILL : 0);
+							int a = raster_contour_around(s, src_line_size);
+							prev[j] |= a;
+							fill[j] = !fill[j];
 						} //EL  (on)  on
 					} else {
-						if (prev_on[y]) {
+						if (prev[j]) {
 							//  (on) off
-							int around_on = raster_contour_around(
-									s - src_pixel_size, src_line_size);
-							if (around_on && (prev_on[y] & around_on))
-								fill_flags[y] = prev_on[y] & BEFOR_ON_FILL;
-							prev_on[y] = 0;
+							int a = raster_contour_around(s - src_pixel_size,
+									src_line_size);
+							if (a && (prev[j] & a))
+								fill[j] = prev[j] & BEFOR_ON_FILL;
+							prev[j] = 0;
 						} //EL (off) off
 					}
 
-					if (fill_flags[y]) {
+					if (fill[j]) {
 						if (s[0] == 0)
 							s[0] = filling_color;
 					}
 
-					// finished filling current src pixel
-
-					if (x >= subgrid_limits[subgrid_index])
-						subgrid_index++;
-
-					if (s[0] == 0)
-						continue;
-
-					// accumulate grid weight
-					if (subpixel_rendering)
-						subgrid_weights[subgrid_index]++;
-					else
-						grid_weight++;
+					if (s[0] > 0) {
+						if (part_weights)
+							part_weights[k]++;
+						else
+							weight++;
+					}
 				}
-			}
+			} /* j */
 
-			// grid weight ready
+			/* grid/part weight ready */
 
 			if (subpixel_rendering) {
-				for (l = 0; l < subgrid_count; l++) {
-					if (subgrid_weights[l] == 0)
+				for (i = 0; i < part_count; i++) {
+					if (part_weights[i] == 0)
 						continue;
 
-					grid_weight = subgrid_weights[l] / subgrid_areas[l];
-					if (grid_weight > 1)
-						perror("grid_weight > 1");
-//					printf("%f %.0f/%d\n", grid_weight, subgrid_weights[k], subgrid_areas[k]);
+					weight = part_weights[i] / part_areas[i];
+					if (weight > 1)
+						perror("weight > 1");
+//					printf("%f %.0f/%d\n", weight, part_weights[k], part_areas[k]);
 
-					m = i * subgrid_count + l; // subpixel index
+					j = gi * part_count + i; /* subpixel index */
 					if (subpixel_filter_type == DISPLACED_FILTER
 							|| rgb_weighted) {
-						subpixel_line[m] = grid_weight * 255;
+						subpixel_line[j] = weight * 255;
 					} else if (subpixel_filter_type == CUSTOME_FILTER) {
-						subpixel_line[m + 2] = grid_weight * 255;
+						subpixel_line[j + 2] = weight * 255;
 					} else {
+						/* FIR5 filtering */
 						for (k = 0; k < 5; k++) {
-							float f = subpixel_line[m + k]
-									+ grid_weight * fringe_filter[k] * 255;
-							if (f < 0)
-								f = 0;
-							subpixel_line[m + k] = f > 255 ? 255 : f;
+							float f = subpixel_line[j + k]
+									+ weight * fir5_filter[k] * 255.0;
+							subpixel_line[j + k] =
+									f < 0 ? 0 : (f > 255 ? 255 : f);
 						}
 					}
 				}
-//				d[0] = 0xff * subgrid_weights[2], d[1] = 0xff * subgrid_weights[1], d[2] =
-//						0xff * subgrid_weights[0];
-			} else if (grid_weight > 0) {
-				grid_weight = grid_weight / grid_area;
+			} else if (weight > 0) {
+				weight = weight / grid_area;
 				if (BLACK_ON_WHITE)
-					grid_weight = 1 - grid_weight;
-				d[0] = 0xff * grid_weight;
-				d[1] = 0xff * grid_weight;
-				d[2] = 0xff * grid_weight;
-//				printf("%d %d = %.0f/%.0f\n", x, y, grid_weight, grid_area);
+					weight = 1 - weight;
+				d[0] = 0xff * weight;
+				d[1] = 0xff * weight;
+				d[2] = 0xff * weight;
+//				printf("%d %d = %.0f/%.0f\n", x, y, weight, grid_area);
 				d += dst_pixel_size;
 			}
-		}
+		} /* gi */
 
 		if (subpixel_rendering) {
 			if (subpixel_filter_type == DISPLACED_FILTER || rgb_weighted) {
@@ -545,21 +548,21 @@ void raster_fill_contours(bitmap_t *dst, bitmap_t *src, int x, int y, int dst_w,
 		}
 	}
 
-	free(prev_on);
-	free(fill_flags);
-	if (subgrid_limits)
-		free(subgrid_limits);
-	if (subgrid_weights)
-		free(subgrid_weights);
+	free(prev);
+	free(fill);
+	if (part_ends)
+		free(part_ends);
+	if (part_weights)
+		free(part_weights);
 	if (subpixel_line)
 		free(subpixel_line);
 }
 
-void raster_draw_contours(bitmap_t *canvas, FT_Outline *outline, int origin_x,
-		int origin_y, float scale) {
+bitmap_t *raster_draw_contours(bitmap_t *canvas, FT_Outline *outline,
+		int origin_x, int origin_y, float scale) {
 	FT_Vector points[outline->n_points];
 	FT_Vector *curr;
-	int min_x = 0, max_x = 0, min_y = 0, max_y = 0;
+	int min_x = INT_MAX, min_y = INT_MAX, max_x = 0, max_y = 0;
 	int i, j = 0;
 	for (i = 0; i < outline->n_points; i++) {
 		curr = &outline->points[i];
@@ -575,20 +578,32 @@ void raster_draw_contours(bitmap_t *canvas, FT_Outline *outline, int origin_x,
 		curr->x += origin_x;
 		curr->y = origin_y - curr->y;
 
-		if (curr->x > max_x)
-			max_x = curr->x;
-		else if (curr->x < min_x)
+		if (curr->x < min_x)
 			min_x = curr->x;
-		if (curr->y > max_y)
-			max_y = curr->y;
-		else if (curr->y < min_y)
+		else if (curr->x > max_x)
+			max_x = curr->x;
+
+		if (curr->y < min_y)
 			min_y = curr->y;
+		else if (curr->y > max_y)
+			max_y = curr->y;
 	}
 
-	if (min_x < 0 || max_x >= canvas->rect.width || min_y < 0
-			|| max_y >= canvas->rect.height) {
-		printf("overflow: %d,%d %d,%d\n", min_x, max_x, min_y, max_y);
-		return;
+	int is_new_canvas = 0;
+	if (canvas) {
+		if (min_x < 0 || max_x >= canvas->rect.width || min_y < 0
+				|| max_y >= canvas->rect.height) {
+			printf("overflow: %d,%d %d,%d\n", min_x, max_x, min_y, max_y);
+			return NULL;
+		}
+		min_x = 0, min_y = 0;
+	} else {
+		is_new_canvas = 1;
+		canvas = malloc(sizeof(bitmap_t));
+		if (!canvas)
+			perror("!canvas");
+		rect_s rect = { 0, 0, 1 + max_x - min_x, 1 + max_y - min_y };
+		bitmap_init(canvas, &rect, 1);
 	}
 
 #ifdef DEBUG
@@ -607,8 +622,10 @@ void raster_draw_contours(bitmap_t *canvas, FT_Outline *outline, int origin_x,
 	int is_contour_end = 0;
 	int contour_draws = 0;
 	for (i = 0; i < outline->n_points; i++) {
-		curr = &points[i];
 		tag = outline->tags[i];
+		curr = &points[i];
+		curr->x -= min_x;
+		curr->y -= min_y;
 
 		if (tag & FT_CURVE_TAG_HAS_SCANMODE)
 			printf("FT_CURVE_TAG_HAS_SCANMODE\n");
@@ -721,6 +738,12 @@ void raster_draw_contours(bitmap_t *canvas, FT_Outline *outline, int origin_x,
 		free(label);
 #endif
 	}
+
+	if (is_new_canvas) {
+		canvas->rect.left = min_x;
+		canvas->rect.top = min_y;
+	}
+	return canvas;
 }
 
 int x11_processor(XEvent *event) {
@@ -778,13 +801,23 @@ int x11_processor(XEvent *event) {
 				FT_OutlineGlyph o = (FT_OutlineGlyph) glyph;
 				FT_Outline *outline = &o->outline;
 
-				raster_draw_contours(bmp_raster, outline, offset_x + advance_x,
-						origin_y, grid_scale);
-				printf("`%lc' #contour=%d #point=%d\n", text[i],
-						outline->n_contours, outline->n_points);
+				if (0) {
+					raster_draw_contours(bmp_raster, outline,
+							offset_x + advance_x, origin_y, grid_scale);
+				} else {
+					bitmap_t *bmp = raster_draw_contours(NULL, outline, 0, 0,
+							grid_scale);
+//					printf("%d, %d\n", bmp->rect.left, bmp->rect.top);
+					bitmap_copy2(bmp_raster,
+							offset_x + advance_x + bmp->rect.left,
+							origin_y + bmp->rect.top, bmp, 0, 0, 0);
+					bitmap_free(bmp);
+				}
 
 				int advance = glyph->advance.x >> 10;
 				advance_x += advance * grid_scale;
+				printf("`%lc' #contour=%d #point=%d advance=%d\n", text[i],
+						outline->n_contours, outline->n_points, advance_x);
 			}
 //			raster_set_pixel(bmp_raster, 60, 172, debug_color);
 
@@ -800,7 +833,7 @@ int x11_processor(XEvent *event) {
 						grid_size, grid_size);
 			}
 
-			if (1) {
+			if (0) {
 				unsigned char weights[] = { 0, 0, 0xff, 0, 0 };
 				FT_Library_SetLcdFilterWeights(ft_library, weights);
 				font.load_flags = load_flags;
