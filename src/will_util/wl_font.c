@@ -1,79 +1,16 @@
 #include "wl_font.h"
 #include "bresenham_rasterizer.h"
-#include <stdlib.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <limits.h>
-
-unsigned char contour_color = 0xff;
-
-void draw_line(bitmap_t *canvas, FT_Vector *p0, FT_Vector *p1,
-		unsigned char color) {
-	contour_color = color;
-//	plotLine(p0->x, p0->y, p1->x, p1->y);
-//	return;
-//	unsigned char *data = canvas->data
-//			+ canvas->rect.top * canvas->bytes_per_line
-//			+ canvas->rect.left * canvas->bytes_per_pixel;
-	unsigned char *data = canvas->data;
-	int x, y;
-	if (p0->x == p1->x) {
-		if (p0->y == p1->y) {
-			// draw one pixel
-			data += p0->y * canvas->bytes_per_line
-					+ p0->x * canvas->bytes_per_pixel;
-			raster_set_contour(data, color);
-		} else {
-			// draw vertical line
-			if (p0->y > p1->y) {
-				FT_Vector *p = p0;
-				p0 = p1;
-				p1 = p;
-			}
-
-			data += p0->y * canvas->bytes_per_line
-					+ p0->x * canvas->bytes_per_pixel;
-			for (y = p0->y; y <= p1->y; y++) {
-				raster_set_contour(data, color);
-				data += canvas->bytes_per_line;
-			}
-		}
-	} else {
-		if (p0->x > p1->x) {
-			FT_Vector *p = p0;
-			p0 = p1;
-			p1 = p;
-		}
-
-		if (p0->y == p1->y) {
-			// draw horizontal line
-			data += p0->y * canvas->bytes_per_line
-					+ p0->x * canvas->bytes_per_pixel;
-			for (x = p0->x; x <= p1->x; x++) {
-				raster_set_contour(data, color);
-				data += canvas->bytes_per_pixel;
-			}
-		} else {
-			plotLine(p0->x, p0->y, p1->x, p1->y, canvas->data,
-					canvas->bytes_per_line, canvas->bytes_per_pixel);
-		}
-	}
-}
-
-void draw_conic(bitmap_t *canvas, FT_Vector *p0, FT_Vector *p1/*conic*/,
-		FT_Vector *p2, unsigned char color) {
-	contour_color = color;
-	plotQuadBezier(p0->x, p0->y, p1->x, p1->y, p2->x, p2->y, canvas->data,
-			canvas->bytes_per_line, canvas->bytes_per_pixel);
-}
-
 
 /* Downsamples the oversampled 3 pixels to one pixel (9 subpixels to 3 subpixels).
  * [R_3i G_3i B_3i] [R_3i+1 G_3i+1 B_3i+1] [R_3i+2 G_3i+2 B_3i+2]
  * 	 =>
  * [R_i G_i B_i]
  */
-void displaced_downsample(unsigned char *dst, unsigned char *src,
-		int dst_width, float filter_weights[]) {
+void displaced_downsample(unsigned char *dst, unsigned char *src, int dst_width,
+		float filter_weights[]) {
 	int dst_pixel_size = 3;
 	int src_triple_size = 9;
 
@@ -104,6 +41,78 @@ void displaced_downsample(unsigned char *dst, unsigned char *src,
 	}
 }
 
+unsigned char contour_colors[3] = { 1, 2 };
+unsigned char slimming_color = 4;
+unsigned char filling_color = 0xff;
+unsigned char debug_color = 0x80;
+
+inline void font_set_contour(unsigned char *d, unsigned char color) {
+	if (d[0] != slimming_color)
+		d[0] = color;
+}
+
+/* for bresenham_rasterizer */
+unsigned char contour_color = 0xff;
+
+void draw_line(bitmap_t *canvas, FT_Vector *p0, FT_Vector *p1,
+		unsigned char color) {
+	contour_color = color;
+//	plotLine(p0->x, p0->y, p1->x, p1->y);
+//	return;
+//	unsigned char *data = canvas->data
+//			+ canvas->rect.top * canvas->bytes_per_line
+//			+ canvas->rect.left * canvas->bytes_per_pixel;
+	unsigned char *data = canvas->data;
+	int x, y;
+	if (p0->x == p1->x) {
+		if (p0->y == p1->y) {
+			// draw one pixel
+			data += p0->y * canvas->bytes_per_line
+					+ p0->x * canvas->bytes_per_pixel;
+			font_set_contour(data, color);
+		} else {
+			// draw vertical line
+			if (p0->y > p1->y) {
+				FT_Vector *p = p0;
+				p0 = p1;
+				p1 = p;
+			}
+
+			data += p0->y * canvas->bytes_per_line
+					+ p0->x * canvas->bytes_per_pixel;
+			for (y = p0->y; y <= p1->y; y++) {
+				font_set_contour(data, color);
+				data += canvas->bytes_per_line;
+			}
+		}
+	} else {
+		if (p0->x > p1->x) {
+			FT_Vector *p = p0;
+			p0 = p1;
+			p1 = p;
+		}
+
+		if (p0->y == p1->y) {
+			// draw horizontal line
+			data += p0->y * canvas->bytes_per_line
+					+ p0->x * canvas->bytes_per_pixel;
+			for (x = p0->x; x <= p1->x; x++) {
+				font_set_contour(data, color);
+				data += canvas->bytes_per_pixel;
+			}
+		} else {
+			plotLine(p0->x, p0->y, p1->x, p1->y, canvas->data,
+					canvas->bytes_per_line, canvas->bytes_per_pixel);
+		}
+	}
+}
+
+void draw_conic(bitmap_t *canvas, FT_Vector *p0, FT_Vector *p1/*conic*/,
+		FT_Vector *p2, unsigned char color) {
+	contour_color = color;
+	plotQuadBezier(p0->x, p0->y, p1->x, p1->y, p2->x, p2->y, canvas->data,
+			canvas->bytes_per_line, canvas->bytes_per_pixel);
+}
 
 //#define LABEL_CONTOUR_POINTS
 //#define BLACK_ON_WHITE 0
@@ -119,15 +128,11 @@ int subpixel_rendering = 1;
 //float fir5_filter[] = { 1. / 17., 4. / 17., 7. / 17., 4. / 17., 1. / 17. };
 float fir5_filter[] = { 1. / 16., 5. / 16., 10. / 16., 5. / 16., 1. / 16. };
 
-#define FIR5_FILTER 0
-#define CUSTOME_FILTER 1
-#define DISPLACED_FILTER 2
-#define DISPLACED_WEIGHTED 3  /* displaced filter with oversampling by RGB luminance weights */
 int subpixel_filter_type = DISPLACED_WEIGHTED;
 
 // A filter design algorithm for subpixel rendering on matrix displays (2007)
-//float displaced_filter_weights[] = { 0.33, 0.34, 0.33 };
 // Optimizing subpixel rendering using a perceptual metric (2011)
+//float displaced_filter_weights[] = { 0.33, 0.34, 0.33 };
 float displaced_filter_weights[] = { 0.3, 0.4, 0.3 };
 
 //unsigned char filter[] = { 15, 60, 105, 60, 15 };
@@ -135,59 +140,37 @@ float displaced_filter_weights[] = { 0.3, 0.4, 0.3 };
 //	unsigned char filter[] = {0, 0, 255, 0, 0};
 //	unsigned char filter[] = {28, 56, 85, 56, 28};
 
-/* color component-value pair */
-unsigned char contour_colors[3] = { 1, 2 };
-unsigned char slimming_color = 4;
-unsigned char filling_color = 0xff;
-unsigned char debug_color = 0x80;
-
 inline int is_same_point(FT_Vector *p0, FT_Vector *p1) {
 	return p0->x == p1->x && p0->y == p1->y;
 }
 
-inline void raster_set_contour(unsigned char *d, unsigned char color) {
-	if (d[0] != slimming_color)
-		d[0] = color;
-}
-
-inline void raster_set_pixel(bitmap_t *r, int x, int y, unsigned char color) {
-	unsigned char *d = r->data + y * r->bytes_per_line + x * r->bytes_per_pixel;
-	d[0] = color;
-}
-
-inline int raster_contour_on(unsigned char *s) {
+inline int font_contour_on(unsigned char *s) {
 	return s[0] == contour_colors[0] || s[0] == contour_colors[1];
 }
 
-inline void raster_copy_contour(bitmap_t *dst, bitmap_t *src, int width,
-		int height) {
-	unsigned char *dst_line = dst->data;
-	unsigned char *src_line = src->data;
-	unsigned char *d, *s;
-	int i, j;
-	for (j = 0; j < src->rect.height && j < height;
-			++j, (dst_line += dst->bytes_per_line, src_line +=
-					src->bytes_per_line)) {
-		d = dst_line;
-		s = src_line;
-		for (i = 0; i < src->rect.width && i < width; ++i) {
-			if (s[0] == contour_colors[0])
-				d[2] = 0xff, d[1] = 0x00, d[0] = 0x00;
-			else if (s[0] == contour_colors[1])
-				d[2] = 0x00, d[1] = 0xff, d[0] = 0x00;
-			else if (s[0] == slimming_color)
-				d[2] = 0x00, d[1] = 0x00, d[0] = 0xff;
-			else if (s[0] == filling_color)
-				d[2] = 0x00, d[1] = 0x00, d[0] = 0x00;
-			else if (s[0] == debug_color)
-				d[2] = 0x00, d[1] = 0x00, d[0] = 0x00;
-			d += dst->bytes_per_pixel;
-			s++;
-		}
-	}
+#define PREV_ON 1
+#define PREV_ON_ABOVE 2
+#define PREV_ON_BELOW 4
+#define BEFOR_ON_FILL 8
+
+inline int font_contour_around(unsigned char *s, int bytes_per_line) {
+	int bytes_per_pixel = 1;
+	unsigned char *a = s - bytes_per_line;
+	unsigned char *b = s + bytes_per_line;
+	int above_on = font_contour_on(a - bytes_per_pixel) || font_contour_on(a)
+			|| font_contour_on(a + bytes_per_pixel);
+	int below_on = font_contour_on(b - bytes_per_pixel) || font_contour_on(b)
+			|| font_contour_on(b + bytes_per_pixel);
+	if (above_on && below_on)
+		return 0; // return PREV_ON_ABOVE | PREV_ON_BELOW;
+	if (above_on)
+		return PREV_ON_ABOVE;
+	if (below_on)
+		return PREV_ON_BELOW;
+	return 0;
 }
 
-int raster_slim_contour(bitmap_t *canvas, FT_Vector *p0) {
+int font_slim_contour(bitmap_t *canvas, FT_Vector *p0) {
 	if (p0->x < 0 || p0->x >= canvas->rect.width || p0->y < 0
 			|| p0->y >= canvas->rect.height)
 		return 0;
@@ -197,19 +180,19 @@ int raster_slim_contour(bitmap_t *canvas, FT_Vector *p0) {
 	unsigned char *t = s - canvas->bytes_per_line;
 
 	// line above
-	int a = raster_contour_on(t);
-	int al = raster_contour_on(t - canvas->bytes_per_pixel);
-	int ar = raster_contour_on(t + canvas->bytes_per_pixel);
+	int a = font_contour_on(t);
+	int al = font_contour_on(t - canvas->bytes_per_pixel);
+	int ar = font_contour_on(t + canvas->bytes_per_pixel);
 
 	// line below
 	t = s + canvas->bytes_per_line;
-	int b = raster_contour_on(t);
-	int bl = raster_contour_on(t - canvas->bytes_per_pixel);
-	int br = raster_contour_on(t + canvas->bytes_per_pixel);
+	int b = font_contour_on(t);
+	int bl = font_contour_on(t - canvas->bytes_per_pixel);
+	int br = font_contour_on(t + canvas->bytes_per_pixel);
 
 	// left and right
-	int l = raster_contour_on(s - canvas->bytes_per_pixel);
-	int r = raster_contour_on(s + canvas->bytes_per_pixel);
+	int l = font_contour_on(s - canvas->bytes_per_pixel);
+	int r = font_contour_on(s + canvas->bytes_per_pixel);
 
 	char slim = 0;
 	if (!(a || al || ar)) { // no above, growing down
@@ -230,13 +213,13 @@ int raster_slim_contour(bitmap_t *canvas, FT_Vector *p0) {
 				s[0] = slimming_color;
 				FT_Vector p = *p0;
 				p.y++;
-				raster_slim_contour(canvas, &p);
+				font_slim_contour(canvas, &p);
 				if (bl) {
 					p.x--;
-					raster_slim_contour(canvas, &p);
+					font_slim_contour(canvas, &p);
 				} else if (br) {
 					p.x++;
-					raster_slim_contour(canvas, &p);
+					font_slim_contour(canvas, &p);
 				}
 			}
 			/* above: ---    ---
@@ -247,7 +230,7 @@ int raster_slim_contour(bitmap_t *canvas, FT_Vector *p0) {
 				s[0] = slimming_color;
 				FT_Vector p = *p0;
 				p.y++;
-				raster_slim_contour(canvas, &p);
+				font_slim_contour(canvas, &p);
 			}
 		} else if (!(l || bl) || !(r || br)) {
 			/* no left or no right
@@ -264,19 +247,19 @@ int raster_slim_contour(bitmap_t *canvas, FT_Vector *p0) {
 				s[0] = slimming_color;
 				FT_Vector p = *p0;
 				p.y--;
-				raster_slim_contour(canvas, &p);
+				font_slim_contour(canvas, &p);
 				if (al) {
 					p.x--;
-					raster_slim_contour(canvas, &p);
+					font_slim_contour(canvas, &p);
 				} else if (ar) {
 					p.x++;
-					raster_slim_contour(canvas, &p);
+					font_slim_contour(canvas, &p);
 				}
 			} else if (!(l || r)) {
 				s[0] = slimming_color;
 				FT_Vector p = *p0;
 				p.y--;
-				raster_slim_contour(canvas, &p);
+				font_slim_contour(canvas, &p);
 			}
 		} else if (!(l || al) || !(r || ar)) {
 			slim = 1;
@@ -317,31 +300,9 @@ int raster_slim_contour(bitmap_t *canvas, FT_Vector *p0) {
 //	/* or only one on around */
 }
 
-#define PREV_ON 1
-#define PREV_ON_ABOVE 2
-#define PREV_ON_BELOW 4
-#define BEFOR_ON_FILL 8
-
-inline int raster_contour_around(unsigned char *s, int bytes_per_line) {
-	int bytes_per_pixel = 1;
-	unsigned char *a = s - bytes_per_line;
-	unsigned char *b = s + bytes_per_line;
-	int above_on = raster_contour_on(a - bytes_per_pixel)
-			|| raster_contour_on(a) || raster_contour_on(a + bytes_per_pixel);
-	int below_on = raster_contour_on(b - bytes_per_pixel)
-			|| raster_contour_on(b) || raster_contour_on(b + bytes_per_pixel);
-	if (above_on && below_on)
-		return 0; // return PREV_ON_ABOVE | PREV_ON_BELOW;
-	if (above_on)
-		return PREV_ON_ABOVE;
-	if (below_on)
-		return PREV_ON_BELOW;
-	return 0;
-}
-
 // http://en.wikipedia.org/wiki/Rasterisation#Scan_conversion
 // http://en.wikipedia.org/wiki/Scanline_algorithm
-void raster_fill_contours(bitmap_t *dst, int dst_w, int dst_h, bitmap_t *src,
+void font_fill_contours(bitmap_t *dst, int dst_w, int dst_h, bitmap_t *src,
 		int src_x, int src_y, int grid_width, int grid_height,
 		unsigned char linear2srgb[]) {
 	int src_line_size = src->bytes_per_line;
@@ -447,18 +408,18 @@ void raster_fill_contours(bitmap_t *dst, int dst_w, int dst_h, bitmap_t *src,
 					 *  /  /  \  \
 					 * *--*    *--*
 					 */
-					if (raster_contour_on(s)) {
+					if (font_contour_on(s)) {
 						if (!prev[j]) {
 							//  (off) on
 							prev[j] = PREV_ON | (fill[j] ? BEFOR_ON_FILL : 0);
-							int a = raster_contour_around(s, src_line_size);
+							int a = font_contour_around(s, src_line_size);
 							prev[j] |= a;
 							fill[j] = !fill[j];
 						} //EL  (on)  on
 					} else {
 						if (prev[j]) {
 							//  (on) off
-							int a = raster_contour_around(s - src_pixel_size,
+							int a = font_contour_around(s - src_pixel_size,
 									src_line_size);
 							if (a && (prev[j] & a))
 								fill[j] = prev[j] & BEFOR_ON_FILL;
@@ -574,7 +535,7 @@ void raster_fill_contours(bitmap_t *dst, int dst_w, int dst_h, bitmap_t *src,
 		free(subpixel_line);
 }
 
-bitmap_t *raster_draw_contours(bitmap_t *canvas, FT_Outline *outline,
+bitmap_t *font_draw_contours(bitmap_t *canvas, FT_Outline *outline,
 		int origin_x, int origin_y, float scale) {
 	FT_Vector points[outline->n_points];
 	FT_Vector *curr;
@@ -670,13 +631,13 @@ bitmap_t *raster_draw_contours(bitmap_t *canvas, FT_Outline *outline,
 					draw_conic(canvas, last_on, last_conic, curr,
 							contour_colors[contour_draws++ % 2]);
 					if (contour_draws > 1)
-						raster_slim_contour(canvas, last_on);
+						font_slim_contour(canvas, last_on);
 				} else {
 					if (!is_same_point(last_on, curr)/*TBD*/) {
 						draw_line(canvas, last_on, curr,
 								contour_colors[contour_draws++ % 2]);
 						if (contour_draws > 1)
-							raster_slim_contour(canvas, last_on);
+							font_slim_contour(canvas, last_on);
 					}
 				}
 			}
@@ -686,7 +647,7 @@ bitmap_t *raster_draw_contours(bitmap_t *canvas, FT_Outline *outline,
 				draw_line(canvas, curr, contour_start,
 						contour_colors[contour_draws++ % 2]);
 				if (contour_draws > 1)
-					raster_slim_contour(canvas, curr);
+					font_slim_contour(canvas, curr);
 				last_on = NULL;
 				last_conic = NULL;
 			} else {
@@ -707,7 +668,7 @@ bitmap_t *raster_draw_contours(bitmap_t *canvas, FT_Outline *outline,
 					draw_conic(canvas, &temp, last_conic, &virtual_on,
 							contour_colors[contour_draws++ % 2]);
 					if (contour_draws > 1)
-						raster_slim_contour(canvas, &temp);
+						font_slim_contour(canvas, &temp);
 #ifdef DEBUG
 					printf(" |on/conic %ld %ld - %ld %ld", temp.x, temp.y,
 							virtual_on.x, virtual_on.y);
@@ -720,7 +681,7 @@ bitmap_t *raster_draw_contours(bitmap_t *canvas, FT_Outline *outline,
 					draw_conic(canvas, last_on, curr, contour_start,
 							contour_colors[contour_draws++ % 2]);
 					if (contour_draws > 1)
-						raster_slim_contour(canvas, last_on);
+						font_slim_contour(canvas, last_on);
 				}
 #ifdef DEBUG
 				printf(" |on/conic %ld %ld - %ld %ld", last_on->x, last_on->y,
@@ -734,7 +695,7 @@ bitmap_t *raster_draw_contours(bitmap_t *canvas, FT_Outline *outline,
 		}
 
 		if (is_contour_end) {
-			raster_slim_contour(canvas, contour_start);
+			font_slim_contour(canvas, contour_start);
 			j++;
 			contour_start = NULL;
 			contour_draws = 0;
@@ -762,12 +723,39 @@ bitmap_t *raster_draw_contours(bitmap_t *canvas, FT_Outline *outline,
 	return canvas;
 }
 
+void font_paint_raw(bitmap_t *dst, bitmap_t *src, int width, int height) {
+	unsigned char *dst_line = dst->data;
+	unsigned char *src_line = src->data;
+	unsigned char *d, *s;
+	int i, j;
+	for (j = 0; j < src->rect.height && j < height;
+			j++, (dst_line += dst->bytes_per_line, src_line +=
+					src->bytes_per_line)) {
+		d = dst_line;
+		s = src_line;
+		for (i = 0; i < src->rect.width && i < width; i++) {
+			if (s[0] == contour_colors[0])
+				d[2] = 0xff, d[1] = 0x00, d[0] = 0x00;
+			else if (s[0] == contour_colors[1])
+				d[2] = 0x00, d[1] = 0xff, d[0] = 0x00;
+			else if (s[0] == slimming_color)
+				d[2] = 0x00, d[1] = 0x00, d[0] = 0xff;
+			else if (s[0] == filling_color)
+				d[2] = 0x00, d[1] = 0x00, d[0] = 0x00;
+			else if (s[0] == debug_color)
+				d[2] = 0x00, d[1] = 0x00, d[0] = 0x00;
+			d += dst->bytes_per_pixel;
+			s++;
+		}
+	}
+}
+
 /* functions for bresenham_rasterizer */
 //extern bitmap_t *bmp_raster;
 //void setPixel(int x, int y) {
 //	unsigned char *data = bmp_raster->data + y * bmp_raster->bytes_per_line
 //			+ x * bmp_raster->bytes_per_pixel;
-//	raster_set_contour(data, contour_color);
+//	font_set_contour(data, contour_color);
 //}
 //void setPixelAA(int x, int y, int z) {
 //	unsigned char *data = bmp_raster->data + y * bmp_raster->bytes_per_line
