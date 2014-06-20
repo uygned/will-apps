@@ -322,8 +322,9 @@ inline int raster_contour_around(unsigned char *s, int bytes_per_line) {
 
 // http://en.wikipedia.org/wiki/Rasterisation#Scan_conversion
 // http://en.wikipedia.org/wiki/Scanline_algorithm
-void raster_fill_contours(bitmap_t *dst, bitmap_t *src, int src_x, int src_y,
-		int dst_w, int dst_h, int grid_width, int grid_height) {
+void raster_fill_contours(bitmap_t *dst, int dst_w, int dst_h, bitmap_t *src,
+		int src_x, int src_y, int grid_width, int grid_height,
+		unsigned char linear2srgb[]) {
 	int src_line_size = src->bytes_per_line;
 	int src_pixel_size = src->bytes_per_pixel;
 	unsigned char *src_line_ = src->data + src_y * src_line_size
@@ -338,9 +339,6 @@ void raster_fill_contours(bitmap_t *dst, bitmap_t *src, int src_x, int src_y,
 
 	int i, j, k;
 	unsigned char *src_line, *s_, *s, *d;
-
-	unsigned char linear2srgb[256];
-	gamma_linear2srgb(linear2srgb, gamma_value);
 
 	unsigned grid_area = grid_width * grid_height;
 	float weight;
@@ -378,7 +376,7 @@ void raster_fill_contours(bitmap_t *dst, bitmap_t *src, int src_x, int src_y,
 		j = 0;
 		for (i = 0; i < part_count; i++) {
 			if (rgb_weighted)
-				k = i % 3 == 0 ? 3 : (i % 3 == 1 ? 6 : 1);
+				k = i % 3 == 0 ? 3 : (i % 3 == 1 ? 5 : 2);
 			else
 				k = (grid_width - j) / (part_count - i);
 			j += k;
@@ -507,16 +505,15 @@ void raster_fill_contours(bitmap_t *dst, bitmap_t *src, int src_x, int src_y,
 			if (subpixel_filter_type == DISPLACED_FILTER || rgb_weighted) {
 				displaced_downsample(d, subpixel_line, dst_w,
 						displaced_filter_weights);
-				i = 0;
-				while (i++ < dst_w) {
-//					for (k = 0; k < dst_pixel_size; k++)
-//						d[k] = linear2srgb[0xff - d[k]];
-//					assert(dst_pixel_size >= 3);
-					k = d[0];
-					d[0] = linear2srgb[0xff - d[2]];
-					d[1] = linear2srgb[0xff - d[1]];
-					d[2] = linear2srgb[0xff - k];
-					d += dst_pixel_size;
+				if (linear2srgb) {
+					i = 0;
+					while (i++ < dst_w) {
+						k = d[0];
+						d[0] = linear2srgb[0xff - d[2]];
+						d[1] = linear2srgb[0xff - d[1]];
+						d[2] = linear2srgb[0xff - k];
+						d += dst_pixel_size;
+					}
 				}
 			} else {
 				if (subpixel_filter_type == CUSTOME_FILTER) {
@@ -825,12 +822,35 @@ int x11_processor(XEvent *event) {
 				advance_x = (advance_x / grid_size + 1) * grid_size;
 
 			if (FILL_CONTOURS) {
+				unsigned char linear2srgb[256];
+				gamma_linear2srgb(linear2srgb, gamma_value);
+
 //				bitmap_t sub = *bmp_raster;
-				bitmap_t sub = bmp_canvas;
-				bitmap_shift(&sub, offset_x + advance_x + 20, offset_y);
-				raster_fill_contours(&sub, bmp_raster, offset_x, offset_y,
-						advance_x / grid_size, font.ascender + font.descender,
-						grid_size, grid_size);
+//				bitmap_t sub = bmp_canvas;
+//				bitmap_shift(&sub, offset_x + advance_x + 20, offset_y);
+
+				int dst_w = advance_x / grid_size;
+				int dst_h = font.ascender + font.descender;
+				FT_Bitmap bmp;
+				bmp.width = dst_w * 3;
+				bmp.rows = dst_h;
+				bmp.pitch = (bmp.width + 3) & ~3;
+				bmp.buffer = calloc(1, bmp.pitch * bmp.rows);
+				bmp.num_grays = 256;
+				bmp.pixel_mode = FT_PIXEL_MODE_LCD;
+
+				bitmap_t dst;
+				rect_init(&dst.rect, 0, 0, dst_w, dst_h);
+				dst.bytes_per_line = bmp.pitch;
+				dst.bytes_per_pixel = 3;
+				dst.data = bmp.buffer;
+				raster_fill_contours(&dst, dst_w, dst_h, bmp_raster, offset_x,
+						offset_y, grid_size, grid_size, NULL);
+				color_t c = { 0, 0, 0 };
+				glyph_draw(&bmp_canvas, offset_x + advance_x + 20, offset_y,
+						&bmp, 0, 0, &c, linear2srgb);
+//				bitmap_copy2(&bmp_canvas, offset_x + advance_x + 20, offset_y,
+//						&dst, 0, 0, 0);
 			}
 
 			if (0) {
