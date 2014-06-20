@@ -54,7 +54,7 @@ inline void font_set_contour(unsigned char *d, unsigned char color) {
 /* for bresenham_rasterizer */
 unsigned char contour_color = 0xff;
 
-void draw_line(bitmap_t *canvas, FT_Vector *p0, FT_Vector *p1,
+void font_draw_line(bitmap_t *canvas, FT_Vector *p0, FT_Vector *p1,
 		unsigned char color) {
 	contour_color = color;
 //	plotLine(p0->x, p0->y, p1->x, p1->y);
@@ -107,7 +107,7 @@ void draw_line(bitmap_t *canvas, FT_Vector *p0, FT_Vector *p1,
 	}
 }
 
-void draw_conic(bitmap_t *canvas, FT_Vector *p0, FT_Vector *p1/*conic*/,
+void font_draw_conic(bitmap_t *canvas, FT_Vector *p0, FT_Vector *p1/*conic*/,
 		FT_Vector *p2, unsigned char color) {
 	contour_color = color;
 	plotQuadBezier(p0->x, p0->y, p1->x, p1->y, p2->x, p2->y, canvas->data,
@@ -628,13 +628,13 @@ bitmap_t *font_draw_contours(bitmap_t *canvas, FT_Outline *outline,
 				printf(" |%s", last_conic ? "conic" : "line");
 #endif
 				if (last_conic) {
-					draw_conic(canvas, last_on, last_conic, curr,
+					font_draw_conic(canvas, last_on, last_conic, curr,
 							contour_colors[contour_draws++ % 2]);
 					if (contour_draws > 1)
 						font_slim_contour(canvas, last_on);
 				} else {
 					if (!is_same_point(last_on, curr)/*TBD*/) {
-						draw_line(canvas, last_on, curr,
+						font_draw_line(canvas, last_on, curr,
 								contour_colors[contour_draws++ % 2]);
 						if (contour_draws > 1)
 							font_slim_contour(canvas, last_on);
@@ -644,7 +644,7 @@ bitmap_t *font_draw_contours(bitmap_t *canvas, FT_Outline *outline,
 
 			if (is_contour_end) {
 				// if (curr == contour_start) then just draw a point
-				draw_line(canvas, curr, contour_start,
+				font_draw_line(canvas, curr, contour_start,
 						contour_colors[contour_draws++ % 2]);
 				if (contour_draws > 1)
 					font_slim_contour(canvas, curr);
@@ -665,7 +665,7 @@ bitmap_t *font_draw_contours(bitmap_t *canvas, FT_Outline *outline,
 					temp.y = last_on->y;
 					virtual_on.x = (last_conic->x + curr->x) / 2;
 					virtual_on.y = (last_conic->y + curr->y) / 2;
-					draw_conic(canvas, &temp, last_conic, &virtual_on,
+					font_draw_conic(canvas, &temp, last_conic, &virtual_on,
 							contour_colors[contour_draws++ % 2]);
 					if (contour_draws > 1)
 						font_slim_contour(canvas, &temp);
@@ -678,7 +678,7 @@ bitmap_t *font_draw_contours(bitmap_t *canvas, FT_Outline *outline,
 			}
 			if (is_contour_end) {
 				if (last_on) {
-					draw_conic(canvas, last_on, curr, contour_start,
+					font_draw_conic(canvas, last_on, curr, contour_start,
 							contour_colors[contour_draws++ % 2]);
 					if (contour_draws > 1)
 						font_slim_contour(canvas, last_on);

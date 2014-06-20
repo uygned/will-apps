@@ -2,15 +2,19 @@
 #define WL_FONT_H
 
 #include "wl_bitmap.h"
-#include "ftimage.h" // FT_Outline
+#include "ftimage.h" /* FT_Outline */
 
 #define FIR5_FILTER 0
 #define CUSTOME_FILTER 1
 #define DISPLACED_FILTER 2
-#define DISPLACED_WEIGHTED 3  /* displaced filter with oversampling by RGB luminance weights */
+/* displaced filter with oversampling by RGB luminance weights */
+#define DISPLACED_WEIGHTED 3
 
 void displaced_downsample(unsigned char *dst, unsigned char *src, int dst_width,
 		float filter_weights[]);
+
+void font_draw_line(bitmap_t *canvas, FT_Vector *p0, FT_Vector *p1,
+		unsigned char color);
 
 bitmap_t *font_draw_contours(bitmap_t *canvas, FT_Outline *outline,
 		int origin_x, int origin_y, float scale);
