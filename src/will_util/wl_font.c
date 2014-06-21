@@ -1,8 +1,8 @@
 #include "wl_font.h"
+#include "wl_math.h"
 #include "bresenham_rasterizer.h"
 #include <stdio.h>
 #include <stdlib.h>
-#include <limits.h>
 
 /* Downsamples the oversampled 3 pixels to one pixel (9 subpixels to 3 subpixels).
  * [R_3i G_3i B_3i] [R_3i+1 G_3i+1 B_3i+1] [R_3i+2 G_3i+2 B_3i+2]
@@ -21,14 +21,17 @@ void displaced_downsample(unsigned char *dst, unsigned char *src, int dst_width,
 //		d[2] = ((unsigned) r_prev + s[0] + s[3]) * 1. / 3.;
 //		d[1] = ((unsigned) s[1] + s[4] + s[7]) * 1. / 3.;
 //		d[0] = ((unsigned) s[5] + s[8] + s[11]) * 1. / 3.;
-		d[0] = filter_weights[0] * r_prev +  //
-				filter_weights[1] * s[0] + // (Rgb) 3n-th src pixel
+		/* Rgb-Rgb_Rgb_rgb-rgb */
+		d[0] = filter_weights[0] * r_prev + //
+				filter_weights[1] * s[0] +  //
 				filter_weights[2] * s[3];
-		d[1] = filter_weights[0] * s[1] +  //
-				filter_weights[1] * s[4] + // rgb(rGb) (3n+1)-th src pixel
+		/* rgb-rGb_rGb_rGb-rgb */
+		d[1] = filter_weights[0] * s[1] +   //
+				filter_weights[1] * s[4] +  //
 				filter_weights[2] * s[7];
-		d[2] = filter_weights[0] * s[5] +  //
-				filter_weights[1] * s[8] + // rgbrgb(rgB) (3n+2)-th src pixel
+		/* rgb-rgb_rgB_rgB-rgB */
+		d[2] = filter_weights[0] * s[5] +   //
+				filter_weights[1] * s[8] +  //
 				filter_weights[2] * (i < dst_width ? s[11] : 0);
 
 //		d[0] = ((unsigned) s[2] + s[5] + s[8]) / 3.;
@@ -53,6 +56,16 @@ inline void font_set_contour(unsigned char *d, unsigned char color) {
 
 /* for bresenham_rasterizer */
 unsigned char contour_color = 0xff;
+
+inline void font_set_contourl(unsigned char *d, int x, int y,
+		int bytes_per_pixel, int bytes_per_line) {
+	if (x < 0 || y < 0) {
+		printf("error contour point: %d %d\n", x, y);
+		return;
+	}
+	font_set_contour(d + y * bytes_per_line + x * bytes_per_pixel,
+			contour_color);
+}
 
 void font_draw_line(bitmap_t *canvas, FT_Vector *p0, FT_Vector *p1,
 		unsigned char color) {
@@ -110,6 +123,8 @@ void font_draw_line(bitmap_t *canvas, FT_Vector *p0, FT_Vector *p1,
 void font_draw_conic(bitmap_t *canvas, FT_Vector *p0, FT_Vector *p1/*conic*/,
 		FT_Vector *p2, unsigned char color) {
 	contour_color = color;
+//	printf("font_draw_conic: %ld.%ld %ld.%ld %ld.%ld", p0->x, p0->y, p1->x, p1->y,
+//			p2->x, p2->y);
 	plotQuadBezier(p0->x, p0->y, p1->x, p1->y, p2->x, p2->y, canvas->data,
 			canvas->bytes_per_line, canvas->bytes_per_pixel);
 }
@@ -337,6 +352,7 @@ void font_fill_contours(bitmap_t *dst, int dst_w, int dst_h, bitmap_t *src,
 			/* 3 pixels per grid are required to do displaced downsampling */
 			part_count = 9;
 			/* partition areas for one pixel should follow P(R):P(G):P(B)=3:6:1 */
+			/* but sometimes 3:5:2 is used */
 			if (rgb_weighted && grid_width < (3 + 6 + 1) * 3)
 				perror("error DISPLACED_WEIGHTED");
 			subpixel_line_size = dst_w * part_count;
@@ -352,7 +368,9 @@ void font_fill_contours(bitmap_t *dst, int dst_w, int dst_h, bitmap_t *src,
 		part_weights = malloc(sizeof(float) * part_count);
 		subpixel_line = malloc(subpixel_line_size);
 
+#ifdef DEBUG
 		printf("partition widths:");
+#endif
 		j = 0;
 		for (i = 0; i < part_count; i++) {
 			if (rgb_weighted)
@@ -362,12 +380,16 @@ void font_fill_contours(bitmap_t *dst, int dst_w, int dst_h, bitmap_t *src,
 			j += k;
 			part_areas[i] = k * grid_height;
 			part_ends[i] = j;
+#ifdef DEBUG
 			printf(" %02d", k);
+#endif
 		}
+#ifdef DEBUG
 		printf("\npartition ends:  ");
 		for (i = 0; i < part_count; i++)
-			printf(" %02d", part_ends[i]);
+		printf(" %02d", part_ends[i]);
 		printf("\n");
+#endif
 	}
 
 	char *prev = malloc(grid_height);
@@ -485,6 +507,18 @@ void font_fill_contours(bitmap_t *dst, int dst_w, int dst_h, bitmap_t *src,
 			if (subpixel_filter_type == DISPLACED_FILTER || rgb_weighted) {
 				displaced_downsample(d, subpixel_line, dst_w,
 						displaced_filter_weights);
+				/* dump bytes */
+//				for (i = 0; i < subpixel_line_size; i += 3) {
+//					printf(" %02X%02X%02X", subpixel_line[i], subpixel_line[i + 1],
+//							subpixel_line[i + 2]);
+//				}
+//				printf("\n");
+//				for (i = 0; i < dst_w; i++) {
+//					j = i * dst_pixel_size;
+//					printf(" %02X%02X%02X", 0xff - d[j], 0xff - d[j + 1],
+//							0xff - d[j + 2]);
+//				}
+//				printf("\n");
 				if (linear2srgb) {
 					i = 0;
 					while (i++ < dst_w) {
@@ -535,11 +569,45 @@ void font_fill_contours(bitmap_t *dst, int dst_w, int dst_h, bitmap_t *src,
 		free(subpixel_line);
 }
 
+inline int extra_right(int x, int grid_size, int margin) {
+	if (x > 0) {
+		/* 0 .. 10 .. 20 .. 30 */
+		/* [20, 29] */
+		if ((x % grid_size) >= (grid_size * 2. / 3.))
+			return grid_size;
+	} else {
+		/* -30 .. -20 .. -10 .. 0 */
+		/* [-10, -1] + 30 = [20, 29] */
+		if ((x % grid_size) + grid_size >= (grid_size * 2. / 3.))
+			return grid_size;
+	}
+	return margin;
+}
+
+inline int extra_left(int x, int grid_size, int margin) {
+	if (x > 0) {
+		/* 0 .. 10 .. 20 .. 30 */
+		/* [0, 9] */
+		if ((x % grid_size) < (grid_size * 1. / 3.))
+			return grid_size;
+	} else {
+		/* -30 .. -20 .. -10 .. 0 */
+		/* [-30, -21] + grid_size = [0, 9] */
+		if ((x % grid_size) + grid_size < (grid_size * 1. / 3.))
+			return grid_size;
+	}
+	return margin;
+}
+
 bitmap_t *font_draw_contours(bitmap_t *canvas, FT_Outline *outline,
-		int origin_x, int origin_y, float scale) {
+		int origin_x, int origin_y, int grid_size) {
+	if (outline->n_points == 0)
+		return NULL;
+
 	FT_Vector points[outline->n_points];
 	FT_Vector *curr;
-	int min_x = INT_MAX, min_y = INT_MAX, max_x = 0, max_y = 0;
+	float scale = grid_size / 64.0;
+	int min_x, min_y, max_x, max_y;
 	int i, j = 0;
 	for (i = 0; i < outline->n_points; i++) {
 		curr = &outline->points[i];
@@ -554,6 +622,12 @@ bitmap_t *font_draw_contours(bitmap_t *canvas, FT_Outline *outline,
 
 		curr->x += origin_x;
 		curr->y = origin_y - curr->y;
+
+		if (i == 0) {
+			max_x = min_x = curr->x;
+			max_y = min_y = curr->y;
+			continue;
+		}
 
 		if (curr->x < min_x)
 			min_x = curr->x;
@@ -578,9 +652,27 @@ bitmap_t *font_draw_contours(bitmap_t *canvas, FT_Outline *outline,
 		is_new_canvas = 1;
 		canvas = malloc(sizeof(bitmap_t));
 		if (!canvas)
-			perror("!canvas");
-		rect_s rect = { 0, 0, 1 + max_x - min_x, 1 + max_y - min_y };
-		bitmap_init(canvas, &rect, 1);
+			return NULL;
+
+		int margin = 2;
+
+		/* extra pixel for displaced_downsample */
+		min_x -= extra_left(min_x, grid_size, margin);
+		max_x += extra_right(max_x, grid_size, margin);
+
+		/* padding */
+		min_x = pad_floor(min_x, grid_size);
+		min_y = pad_floor(min_y - margin, grid_size);
+		/* plus one for real width and height */
+		max_x = pad_ceil(max_x + 1, grid_size);
+		max_y = pad_ceil(max_y + margin + 1, grid_size);
+
+		rect_s rect = { 0, 0, max_x - min_x, max_y - min_y };
+		if (!bitmap_init(canvas, &rect, 1)) {
+			free(canvas);
+			return NULL;
+		}
+//		printf("contour bitmap: %dx%d\n", rect.width, rect.height);
 	}
 
 #ifdef DEBUG
@@ -673,8 +765,8 @@ bitmap_t *font_draw_contours(bitmap_t *canvas, FT_Outline *outline,
 					printf(" |on/conic %ld %ld - %ld %ld", temp.x, temp.y,
 							virtual_on.x, virtual_on.y);
 #endif
+					last_on = &virtual_on;
 				}
-				last_on = &virtual_on;
 			}
 			if (is_contour_end) {
 				if (last_on) {
@@ -720,7 +812,52 @@ bitmap_t *font_draw_contours(bitmap_t *canvas, FT_Outline *outline,
 		canvas->rect.left = min_x;
 		canvas->rect.top = min_y;
 	}
+
 	return canvas;
+}
+
+char font_outline2bitmap(FT_Outline *outline, FT_Bitmap *bitmap,
+		FT_Bitmap *argb32, int grid_size, FT_Vector *offset) {
+	bitmap_t *bmp = font_draw_contours(NULL, outline, 0, 0, grid_size);
+	if (!bmp)
+		return 0;
+
+	int w = bmp->rect.width / grid_size;
+	int h = bmp->rect.height / grid_size;
+
+	offset->x = bmp->rect.left / grid_size;
+	offset->y = bmp->rect.top / grid_size;
+	bmp->rect.left = 0;
+	bmp->rect.top = 0;
+
+	bitmap->rows = h;
+	bitmap->width = w * 3;
+	bitmap->pitch = (bitmap->width + 3) & ~3;
+	if (bitmap->buffer)
+		free(bitmap->buffer);
+	bitmap->buffer = calloc(1, bitmap->pitch * bitmap->rows);
+	bitmap->num_grays = 256;
+	bitmap->pixel_mode = FT_PIXEL_MODE_LCD;
+
+	if (argb32) { /* for cairo */
+		argb32->rows = h;
+		argb32->width = w;
+		argb32->pitch = w * 4;
+		argb32->buffer = calloc(1, argb32->pitch * argb32->rows);
+		argb32->num_grays = 256;
+		argb32->pixel_mode = FT_PIXEL_MODE_LCD;
+	}
+
+	bitmap_t dst;
+	rect_init(&dst.rect, 0, 0, w, h);
+	dst.data = bitmap->buffer;
+	dst.bytes_per_line = bitmap->pitch;
+	dst.bytes_per_pixel = 3;
+
+	font_fill_contours(&dst, w, h, bmp, 0, 0, grid_size, grid_size, 0);
+	bitmap_free(bmp);
+
+	return 1;
 }
 
 void font_paint_raw(bitmap_t *dst, bitmap_t *src, int width, int height) {
@@ -800,3 +937,23 @@ void font_paint_raw(bitmap_t *dst, bitmap_t *src, int width, int height) {
 //			slope = (p1->y - p0->y) / (double) (p1->x - p0->x);
 //			x = p0->x;
 //			double x_ = x;
+
+
+//inline int font_contour_around(unsigned char *s, int bytes_per_line,
+//		char at_first_line, char at_last_line) {
+//	int bytes_per_pixel = 1;
+//	int above_on = 0, below_on = 0;
+//	if (!at_first_line) {
+//		unsigned char *a = s - bytes_per_line;
+//		above_on = font_contour_on(a - bytes_per_pixel) || font_contour_on(a)
+//				|| font_contour_on(a + bytes_per_pixel);
+//	}
+//	if (!at_last_line) {
+//		unsigned char *b = s + bytes_per_line;
+//		below_on = font_contour_on(b - bytes_per_pixel) || font_contour_on(b)
+//				|| font_contour_on(b + bytes_per_pixel);
+//	}
+//	if (above_on && below_on)
+//		return 0; // return PREV_ON_ABOVE | PREV_ON_BELOW;
+//	return above_on ? PREV_ON_ABOVE : (below_on ? PREV_ON_BELOW : 0);
+//}
