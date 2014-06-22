@@ -5,9 +5,10 @@
 #include <stdlib.h>
 
 /* Downsamples the oversampled 3 pixels to one pixel (9 subpixels to 3 subpixels).
- * [R_3i G_3i B_3i] [R_3i+1 G_3i+1 B_3i+1] [R_3i+2 G_3i+2 B_3i+2]
- * 	 =>
- * [R_i G_i B_i]
+ * [RGB](i) <- [RGB](3i) [RGB](3i+1) [RGB](3i+2)
+ * Papers:
+ * A filter design algorithm for subpixel rendering on matrix displays (2007)
+ * Optimizing subpixel rendering using a perceptual metric (2011)
  */
 void displaced_downsample(unsigned char *dst, unsigned char *src, int dst_width,
 		float filter_weights[]) {
@@ -44,10 +45,10 @@ void displaced_downsample(unsigned char *dst, unsigned char *src, int dst_width,
 	}
 }
 
-unsigned char contour_colors[3] = { 1, 2 };
-unsigned char slimming_color = 4;
-unsigned char filling_color = 0xff;
-unsigned char debug_color = 0x80;
+static unsigned char contour_colors[3] = { 1, 2 };
+static unsigned char slimming_color = 4;
+static unsigned char filling_color = 0xff;
+static unsigned char debug_color = 0x80;
 
 inline void font_set_contour(unsigned char *d, unsigned char color) {
 	if (d[0] != slimming_color)
@@ -55,7 +56,7 @@ inline void font_set_contour(unsigned char *d, unsigned char color) {
 }
 
 /* for bresenham_rasterizer */
-unsigned char contour_color = 0xff;
+static unsigned char contour_color = 0xff;
 
 inline void font_set_contourl(unsigned char *d, int x, int y,
 		int bytes_per_pixel, int bytes_per_line) {
@@ -132,7 +133,7 @@ void font_draw_conic(bitmap_t *canvas, FT_Vector *p0, FT_Vector *p1/*conic*/,
 //#define LABEL_CONTOUR_POINTS
 //#define BLACK_ON_WHITE 0
 #define BLACK_ON_WHITE 1 /* or WHITE_ON_BLACK */
-int subpixel_rendering = 1;
+static int subpixel_rendering = 1;
 
 //unsigned char filter[] = { 0x18, 0x1C, 0x97, 0x1C, 0x18 }; // Mac OS X 10.8
 //float fir5_filter[] = { 0.119, 0.370, 0.511, 0.370, 0.119 }; // mitchell_filter
@@ -141,14 +142,12 @@ int subpixel_rendering = 1;
 //float fir5_filter[] = { 0.059, 0.235, 0.412, 0.235, 0.059 };
 //float fir5_filter[] = { 0., 1. / 4., 2. / 4., 1. / 4., 0. };
 //float fir5_filter[] = { 1. / 17., 4. / 17., 7. / 17., 4. / 17., 1. / 17. };
-float fir5_filter[] = { 1. / 16., 5. / 16., 10. / 16., 5. / 16., 1. / 16. };
+static float fir5_filter[] = { 1. / 16., 5. / 16., 10. / 16., 5. / 16., 1. / 16. };
 
-int subpixel_filter_type = DISPLACED_WEIGHTED;
+static int subpixel_filter_type = DISPLACED_WEIGHTED;
 
-// A filter design algorithm for subpixel rendering on matrix displays (2007)
-// Optimizing subpixel rendering using a perceptual metric (2011)
-//float displaced_filter_weights[] = { 0.33, 0.34, 0.33 };
-float displaced_filter_weights[] = { 0.3, 0.4, 0.3 };
+//static float displaced_filter_weights[] = { 0.33, 0.34, 0.33 };
+static float displaced_filter_weights[] = { 0.3, 0.4, 0.3 };
 
 //unsigned char filter[] = { 15, 60, 105, 60, 15 };
 //unsigned char filter[] = { 30, 60, 85, 60, 30 };
@@ -315,8 +314,6 @@ int font_slim_contour(bitmap_t *canvas, FT_Vector *p0) {
 //	/* or only one on around */
 }
 
-// http://en.wikipedia.org/wiki/Rasterisation#Scan_conversion
-// http://en.wikipedia.org/wiki/Scanline_algorithm
 void font_fill_contours(bitmap_t *dst, int dst_w, int dst_h, bitmap_t *src,
 		int src_x, int src_y, int grid_width, int grid_height,
 		unsigned char linear2srgb[]) {
@@ -599,6 +596,8 @@ inline int extra_left(int x, int grid_size, int margin) {
 	return margin;
 }
 
+/* http://en.wikipedia.org/wiki/Rasterisation#Scan_conversion */
+/* http://en.wikipedia.org/wiki/Scanline_algorithm */
 bitmap_t *font_draw_contours(bitmap_t *canvas, FT_Outline *outline,
 		int origin_x, int origin_y, int grid_size) {
 	if (outline->n_points == 0)
