@@ -40,7 +40,7 @@ void hashmap_init(hashmap_t *map, uint32_t size, uint32_t hash_seed) {
 	printf("[HASHMAP] size: %d (%d)\n", map->size, size);
 }
 
-int hashmap_add(hashmap_t *map, const char *key, void *data) {
+int hashmap_add(hashmap_t *map, char *key, void *data) {
 	hashmap_entry_t *next = malloc(sizeof(hashmap_entry_t));
 	if (next == NULL) {
 		printf("[ERROR] hashmap_add malloc\n");
@@ -53,9 +53,9 @@ int hashmap_add(hashmap_t *map, const char *key, void *data) {
 	uint32_t len = strlen(key);
 	uint32_t hash = murmur3_32(key, len, map->hash_seed);
 	uint32_t index = hash % map->size;
-	if (strcmp(key, "perpetual") == 0)
-		printf("hashmap_add %s %d %d %d %d\n", key, len, hash,
-				murmur3_32(key, len, map->hash_seed), map->size);
+//	if (strcmp(key, "perpetual") == 0)
+//		printf("hashmap_add %s %d %d %d %d\n", key, len, map->hash_seed, hash,
+//				murmur3_32_(key, len, map->hash_seed));
 	hashmap_entry_t *bucket = map->buckets[index];
 	if (bucket) {
 		while (bucket->next)
@@ -75,10 +75,10 @@ hashmap_entry_t *hashmap_get(hashmap_t *map, const char *key) {
 	uint32_t len = strlen(key);
 	uint32_t hash = murmur3_32(key, len, map->hash_seed);
 	uint32_t index = hash % map->size;
+//	printf("hashmap_get %s %d %d %d %d\n", key, len, map->hash_seed, hash,
+//			murmur3_32_(key, len, map->hash_seed));
 	hashmap_entry_t *bucket = map->buckets[index];
 	int bucket_size = map->size_of_buckets[index];
-	printf("hashmap_get %s %d %d %d %d\n", key, len, hash,
-			murmur3_32(key, len, map->hash_seed), map->size);
 	int i, j = 0;
 	for (i = 0; i < bucket_size; i++, bucket = bucket->next) {
 		int l = strlen(bucket->key);

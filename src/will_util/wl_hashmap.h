@@ -18,7 +18,7 @@ typedef struct {
 
 void hashmap_free(hashmap_t *map);
 void hashmap_init(hashmap_t *map, uint32_t size, uint32_t hash_seed);
-int hashmap_add(hashmap_t *map, const char *key, void *data);
+int hashmap_add(hashmap_t *map, char *key, void *data);
 hashmap_entry_t *hashmap_get(hashmap_t *map, const char *key);
 
 #endif
