@@ -4,6 +4,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+//#define FONT_DEBUG
+//#define LABEL_CONTOUR_POINTS
+
 /* Downsamples the oversampled 3 pixels to one pixel (9 subpixels to 3 subpixels).
  * [RGB](i) <- [RGB](3i) [RGB](3i+1) [RGB](3i+2)
  * Papers:
@@ -23,17 +26,17 @@ void displaced_downsample(unsigned char *dst, unsigned char *src, int dst_width,
 //		d[1] = ((unsigned) s[1] + s[4] + s[7]) * 1. / 3.;
 //		d[0] = ((unsigned) s[5] + s[8] + s[11]) * 1. / 3.;
 		/* Rgb-Rgb_Rgb_rgb-rgb */
-		d[0] = filter_weights[0] * r_prev + //
+		d[0] = float2byte(filter_weights[0] * r_prev + //
 				filter_weights[1] * s[0] +  //
-				filter_weights[2] * s[3];
+				filter_weights[2] * s[3]);
 		/* rgb-rGb_rGb_rGb-rgb */
-		d[1] = filter_weights[0] * s[1] +   //
+		d[1] = float2byte(filter_weights[0] * s[1] +   //
 				filter_weights[1] * s[4] +  //
-				filter_weights[2] * s[7];
+				filter_weights[2] * s[7]);
 		/* rgb-rgb_rgB_rgB-rgB */
-		d[2] = filter_weights[0] * s[5] +   //
+		d[2] = float2byte(filter_weights[0] * s[5] +   //
 				filter_weights[1] * s[8] +  //
-				filter_weights[2] * (i < dst_width ? s[11] : 0);
+				filter_weights[2] * (i < dst_width ? s[11] : 0));
 
 //		d[0] = ((unsigned) s[2] + s[5] + s[8]) / 3.;
 //		d[1] = ((unsigned) s[1] + s[4] + s[7]) / 3.;
@@ -130,9 +133,13 @@ void font_draw_conic(bitmap_t *canvas, FT_Vector *p0, FT_Vector *p1/*conic*/,
 			canvas->bytes_per_line, canvas->bytes_per_pixel);
 }
 
-//#define LABEL_CONTOUR_POINTS
-//#define BLACK_ON_WHITE 0
-#define BLACK_ON_WHITE 1 /* or WHITE_ON_BLACK */
+void font_draw_cubic(bitmap_t *canvas, FT_Vector *p0, FT_Vector *p1,
+		FT_Vector *p2, FT_Vector *p3, unsigned char color) {
+	contour_color = color;
+	plotCubicBezier(p0->x, p0->y, p1->x, p1->y, p2->x, p2->y, p3->x, p3->y,
+			canvas->data, canvas->bytes_per_line, canvas->bytes_per_pixel);
+}
+
 static int subpixel_rendering = 1;
 
 //unsigned char filter[] = { 0x18, 0x1C, 0x97, 0x1C, 0x18 }; // Mac OS X 10.8
@@ -142,12 +149,13 @@ static int subpixel_rendering = 1;
 //float fir5_filter[] = { 0.059, 0.235, 0.412, 0.235, 0.059 };
 //float fir5_filter[] = { 0., 1. / 4., 2. / 4., 1. / 4., 0. };
 //float fir5_filter[] = { 1. / 17., 4. / 17., 7. / 17., 4. / 17., 1. / 17. };
-static float fir5_filter[] = { 1. / 16., 5. / 16., 10. / 16., 5. / 16., 1. / 16. };
+static float fir5_filter[] =
+		{ 1. / 16., 5. / 16., 10. / 16., 5. / 16., 1. / 16. };
 
 static int subpixel_filter_type = DISPLACED_WEIGHTED;
 
-//static float displaced_filter_weights[] = { 0.33, 0.34, 0.33 };
-static float displaced_filter_weights[] = { 0.3, 0.4, 0.3 };
+static float displaced_filter_weights[] = { 0.33, 0.34, 0.33 };
+//static float displaced_filter_weights[] = { 0.3, 0.4, 0.3 };
 
 //unsigned char filter[] = { 15, 60, 105, 60, 15 };
 //unsigned char filter[] = { 30, 60, 85, 60, 30 };
@@ -365,7 +373,7 @@ void font_fill_contours(bitmap_t *dst, int dst_w, int dst_h, bitmap_t *src,
 		part_weights = malloc(sizeof(float) * part_count);
 		subpixel_line = malloc(subpixel_line_size);
 
-#ifdef DEBUG
+#ifdef FONT_DEBUG
 		printf("partition widths:");
 #endif
 		j = 0;
@@ -377,11 +385,11 @@ void font_fill_contours(bitmap_t *dst, int dst_w, int dst_h, bitmap_t *src,
 			j += k;
 			part_areas[i] = k * grid_height;
 			part_ends[i] = j;
-#ifdef DEBUG
+#ifdef FONT_DEBUG
 			printf(" %02d", k);
 #endif
 		}
-#ifdef DEBUG
+#ifdef FONT_DEBUG
 		printf("\npartition ends:  ");
 		for (i = 0; i < part_count; i++)
 		printf(" %02d", part_ends[i]);
@@ -468,33 +476,30 @@ void font_fill_contours(bitmap_t *dst, int dst_w, int dst_h, bitmap_t *src,
 						continue;
 
 					weight = part_weights[i] / part_areas[i];
-					if (weight > 1)
+					if (weight < 0 || weight > 1)
 						perror("weight > 1");
 //					printf("%f %.0f/%d\n", weight, part_weights[k], part_areas[k]);
 
 					j = gi * part_count + i; /* subpixel index */
 					if (subpixel_filter_type == DISPLACED_FILTER
 							|| rgb_weighted) {
-						subpixel_line[j] = weight * 255;
+						subpixel_line[j] = float2byte(weight * 255.0);
 					} else if (subpixel_filter_type == CUSTOME_FILTER) {
-						subpixel_line[j + 2] = weight * 255;
+						subpixel_line[j + 2] = float2byte(weight * 255.0);
 					} else {
 						/* FIR5 filtering */
 						for (k = 0; k < 5; k++) {
 							float f = subpixel_line[j + k]
-									+ weight * fir5_filter[k] * 255.0;
-							subpixel_line[j + k] =
-									f < 0 ? 0 : (f > 255 ? 255 : f);
+									+ fir5_filter[k] * weight * 255.0;
+							subpixel_line[j + k] = float2byte(f);
 						}
 					}
 				}
 			} else if (weight > 0) {
 				weight = weight / grid_area;
-				if (BLACK_ON_WHITE)
-					weight = 1 - weight;
-				d[0] = 0xff * weight;
-				d[1] = 0xff * weight;
-				d[2] = 0xff * weight;
+				d[0] = float2byte(weight * 255.0);
+				d[1] = d[0];
+				d[2] = d[0];
 //				printf("%d %d = %.0f/%.0f\n", x, y, weight, grid_area);
 				d += dst_pixel_size;
 			}
@@ -547,9 +552,15 @@ void font_fill_contours(bitmap_t *dst, int dst_w, int dst_h, bitmap_t *src,
 					}
 				}
 				for (i = 2; i < subpixel_line_size - 2;) {
-					d[2] = linear2srgb[0xff - subpixel_line[i++]];
-					d[1] = linear2srgb[0xff - subpixel_line[i++]];
-					d[0] = linear2srgb[0xff - subpixel_line[i++]];
+					if (linear2srgb) {
+						d[2] = linear2srgb[0xff - subpixel_line[i++]];
+						d[1] = linear2srgb[0xff - subpixel_line[i++]];
+						d[0] = linear2srgb[0xff - subpixel_line[i++]];
+					} else {
+						d[0] = subpixel_line[i++];
+						d[1] = subpixel_line[i++];
+						d[2] = subpixel_line[i++];
+					}
 					d += dst_pixel_size;
 				}
 			}
@@ -607,7 +618,7 @@ bitmap_t *font_draw_contours(bitmap_t *canvas, FT_Outline *outline,
 	FT_Vector *curr;
 	float scale = grid_size / 64.0;
 	int min_x, min_y, max_x, max_y;
-	int i, j = 0;
+	int i;
 	for (i = 0; i < outline->n_points; i++) {
 		curr = &outline->points[i];
 		points[i].x = curr->x;
@@ -641,12 +652,15 @@ bitmap_t *font_draw_contours(bitmap_t *canvas, FT_Outline *outline,
 
 	int is_new_canvas = 0;
 	if (canvas) {
+		printf("outline: %d,%d %dx%d\n", min_x, min_y, max_x - min_x,
+				max_y - min_y);
 		if (min_x < 0 || max_x >= canvas->rect.width || min_y < 0
 				|| max_y >= canvas->rect.height) {
-			printf("overflow: %d,%d %d,%d\n", min_x, max_x, min_y, max_y);
+			printf("overflow: %d,%d %d,%d\n", min_x, min_y, max_x, max_y);
 			return NULL;
 		}
 		min_x = 0, min_y = 0;
+//		min_x = 0, min_y = 200;
 	} else {
 		is_new_canvas = 1;
 		canvas = malloc(sizeof(bitmap_t));
@@ -674,21 +688,21 @@ bitmap_t *font_draw_contours(bitmap_t *canvas, FT_Outline *outline,
 //		printf("contour bitmap: %dx%d\n", rect.width, rect.height);
 	}
 
-#ifdef DEBUG
+#ifdef FONT_DEBUG
 	char tag_mode = FT_CURVE_TAG_ON | FT_CURVE_TAG_CONIC | FT_CURVE_TAG_CUBIC;
 	char *tags[] = {"CONIC", "ON", "CUBIC"};
 	char buf[2];
 	buf[1] = 0;
 #endif
 
-	int tag;
-	FT_Vector *last_on = NULL;
-	FT_Vector *last_conic = NULL;
+	int tag, j = 0;
+	int contour_draws = 0;
+	int is_contour_end = 0;
+	FT_Vector *contour_start = NULL;
+	FT_Vector *last_on = NULL, *last_conic = NULL;
+	FT_Vector *cubic1 = NULL, *cubic2 = NULL;
 	FT_Vector virtual_on;
 	FT_Vector temp;
-	FT_Vector *contour_start = NULL;
-	int is_contour_end = 0;
-	int contour_draws = 0;
 	for (i = 0; i < outline->n_points; i++) {
 		tag = outline->tags[i];
 		curr = &points[i];
@@ -698,9 +712,9 @@ bitmap_t *font_draw_contours(bitmap_t *canvas, FT_Outline *outline,
 		if (tag & FT_CURVE_TAG_HAS_SCANMODE)
 			printf("FT_CURVE_TAG_HAS_SCANMODE\n");
 
-#ifdef DEBUG
+#ifdef FONT_DEBUG
 		buf[0] = i % 2 == 0 ? (char) ('A' + i / 2) : (char) ('a' + i / 2);
-		printf("C%d %s(%d) %03ld,%03ld %c", j, tags[tag & tag_mode], tag,
+		printf("contour-%d %s(%d) %03ld,%03ld %c", j, tags[tag & tag_mode], tag,
 				curr->x, curr->y, buf[0]);
 #endif
 
@@ -715,11 +729,16 @@ bitmap_t *font_draw_contours(bitmap_t *canvas, FT_Outline *outline,
 		// http://freetype.org/freetype2/docs/reference/ft2-outline_processing.html#FT_Outline
 		if (tag & FT_CURVE_TAG_ON) {
 			if (last_on) {
-#ifdef DEBUG
+#ifdef FONT_DEBUG
 				printf(" |%s", last_conic ? "conic" : "line");
 #endif
 				if (last_conic) {
 					font_draw_conic(canvas, last_on, last_conic, curr,
+							contour_colors[contour_draws++ % 2]);
+					if (contour_draws > 1)
+						font_slim_contour(canvas, last_on);
+				} else if (cubic1 && cubic2) {
+					font_draw_cubic(canvas, last_on, cubic1, cubic2, curr,
 							contour_colors[contour_draws++ % 2]);
 					if (contour_draws > 1)
 						font_slim_contour(canvas, last_on);
@@ -739,14 +758,26 @@ bitmap_t *font_draw_contours(bitmap_t *canvas, FT_Outline *outline,
 						contour_colors[contour_draws++ % 2]);
 				if (contour_draws > 1)
 					font_slim_contour(canvas, curr);
-				last_on = NULL;
-				last_conic = NULL;
-			} else {
-				last_on = curr;
+				// TODO test this
+//				last_on = NULL;
+//				last_conic = NULL;
+//			} else {
+//				last_on = curr;
 			}
 
-			last_conic = NULL; // clear last_conic when we see an `on'
+			last_on = curr, last_conic = NULL;
+			cubic1 = NULL, cubic2 = NULL;
 		} else if (tag & FT_CURVE_TAG_CUBIC) {
+			if (cubic1)
+				cubic2 = curr;
+			else
+				cubic1 = curr;
+			if (is_contour_end && cubic1 && cubic2) {
+				font_draw_cubic(canvas, last_on, cubic1, cubic2, contour_start,
+						contour_colors[contour_draws++ % 2]);
+				if (contour_draws > 1)
+					font_slim_contour(canvas, last_on);
+			}
 		} else {
 			if (last_conic) {
 				// we got two successive conic ‘off’ points, create a virtual ‘on’ point inbetween them
@@ -760,7 +791,7 @@ bitmap_t *font_draw_contours(bitmap_t *canvas, FT_Outline *outline,
 							contour_colors[contour_draws++ % 2]);
 					if (contour_draws > 1)
 						font_slim_contour(canvas, &temp);
-#ifdef DEBUG
+#ifdef FONT_DEBUG
 					printf(" |on/conic %ld %ld - %ld %ld", temp.x, temp.y,
 							virtual_on.x, virtual_on.y);
 #endif
@@ -774,23 +805,27 @@ bitmap_t *font_draw_contours(bitmap_t *canvas, FT_Outline *outline,
 					if (contour_draws > 1)
 						font_slim_contour(canvas, last_on);
 				}
-#ifdef DEBUG
+#ifdef FONT_DEBUG
 				printf(" |on/conic %ld %ld - %ld %ld", last_on->x, last_on->y,
 						contour_start->x, contour_start->y);
 #endif
-				last_on = NULL;
-				last_conic = NULL;
-			} else {
-				last_conic = curr;
+				// TODO test this
+//				last_on = NULL;
+//				last_conic = NULL;
+//			} else {
+//				last_conic = curr;
 			}
+			last_conic = curr;
 		}
 
 		if (is_contour_end) {
 			font_slim_contour(canvas, contour_start);
 			j++;
-			contour_start = NULL;
 			contour_draws = 0;
-#ifdef DEBUG
+			contour_start = NULL;
+			last_on = NULL, last_conic = NULL;
+			cubic1 = NULL, cubic2 = NULL;
+#ifdef FONT_DEBUG
 			printf(" *\n");
 		} else {
 			printf("\n");
@@ -856,6 +891,18 @@ char font_outline2bitmap(FT_Outline *outline, FT_Bitmap *bitmap,
 	font_fill_contours(&dst, w, h, bmp, 0, 0, grid_size, grid_size, 0);
 	bitmap_free(bmp);
 
+	return 1;
+}
+
+char font_render_glyph(FT_GlyphSlot glyph, int oversampling_rate,
+		FT_Bitmap *argb32) {
+	if (glyph->format != FT_GLYPH_FORMAT_OUTLINE)
+		return 0;
+	FT_Vector offset;
+	font_outline2bitmap(&glyph->outline, &glyph->bitmap, argb32,
+			oversampling_rate, &offset);
+	glyph->bitmap_left = offset.x;
+	glyph->bitmap_top = -offset.y;
 	return 1;
 }
 
@@ -936,8 +983,6 @@ void font_paint_raw(bitmap_t *dst, bitmap_t *src, int width, int height) {
 //			slope = (p1->y - p0->y) / (double) (p1->x - p0->x);
 //			x = p0->x;
 //			double x_ = x;
-
-
 //inline int font_contour_around(unsigned char *s, int bytes_per_line,
 //		char at_first_line, char at_last_line) {
 //	int bytes_per_pixel = 1;
