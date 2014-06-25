@@ -1,5 +1,8 @@
 #include "wl_text.h"
-//#include FT_STROKER_H
+#include "wl_font.h"
+#include "wl_math.h"
+
+//#define USE_DISPLACED_FILTER
 
 void glyph_run_init(glyph_run_t *grun, int offset_x, int offset_y) {
 	grun->curr_pos = 0;
@@ -88,8 +91,8 @@ typedef struct {
 	color_t *color;
 	ushort pixel_geometry;
 	char subpixel_offset;
-} ftr_run_t;
-unsigned char subpixel_filter[] = { 15, 60, 105, 60, 15 };
+}ftr_run_t;
+unsigned char subpixel_filter[] = {15, 60, 105, 60, 15};
 #else
 typedef struct {
 	bitmap_t bitmap;
@@ -119,13 +122,13 @@ void ft_gray_spans(int y, int count, const FT_Span *spans, void *user) {
 	color_t *rgb = args->color;
 	bitmap_t *dst = &args->bitmap;
 //	if (y > dst->rect.top)
-	int y_flip = dst->rect.top - y; // dst->rect.top with font-ascender added
+	int y_flip = dst->rect.top - y;// dst->rect.top with font-ascender added
 	if (y_flip < 0 || y_flip >= dst->rect.top + dst->rect.height)
-		return;
+	return;
 
 	const FT_Span *span = spans;
 	unsigned char *data = dst->data + y_flip * dst->bytes_per_line
-			+ dst->rect.left * dst->bytes_per_pixel;
+	+ dst->rect.left * dst->bytes_per_pixel;
 	int i, j;
 
 #ifdef FONT_SUBPIXEL_RENDERING
@@ -136,30 +139,63 @@ void ft_gray_spans(int y, int count, const FT_Span *spans, void *user) {
 		unsigned char *filtered = (unsigned char *) calloc(1, width);
 
 		int k;
+		float coverage, f;
+		unsigned start, end;
 		for (i = 0; i < count; i++, span++) {
 //			if (span->x < min_x)
 //				min_x = span->x;
 //			if (span->x + span->len > max_x)
 //				max_x = span->x;
 
-			unsigned start = span->x - first_subpixel;
-			unsigned end = start + span->len;
+			coverage = span->coverage;
+			start = span->x - first_subpixel;
+			end = start + span->len;
 			for (j = start; j < end; j++) {
 				for (k = 0; k < 5; k++) {
-					float f = filtered[j + k]
-							+ span->coverage * subpixel_filter[k] / 255.0;
-					filtered[j + k] = f > 255 ? 255 : f;
+					f = filtered[j + k] + coverage * subpixel_filter[k] / 255.0;
+					filtered[j + k] += f < 0 ? 0 : (f > 255 ? 255 : f);
 				}
 			}
 		}
 
+//		for (i = 0; i < width; i++) {
+//			filtered[i] = linear2srgb[filtered[i]];
+//		}
+//
+////		printf("%02d:      ", y);
+//		k = 0;
+//		span = spans;
+//		for (i = 0; i < count; i++, span++) {
+////			printf(" %d-%d", span->x, span->x+span->len);
+//			unsigned char coverage = span->coverage;
+//			coverage = linear2srgb[coverage];
+////			for (j = k; j < span->x; j++)
+////				printf("   ");
+////			for (j = span->x; j < span->x + span->len; j++)
+////				printf(" %02x", coverage);
+////			unsigned char coverage = span->coverage;
+////			coverage = linear2srgb[coverage];
+////			unsigned start = span->x - first_subpixel;
+////			unsigned end = start + span->len;
+////			for (j = start; j < end; j++) {
+////				filtered[j + 2] = coverage;
+////			}
+//			k = span->x + span->len;
+//		}
+////		printf("%02d:", y);
+////		for (j = 0; j < first_subpixel; j++)
+////			printf("   ");
+////		for (j = 0; j < width; j++)
+////			printf(" %02x", filtered[j]);
+////		printf("\n");
+
 		i = 0;
 		first_subpixel += -2/*FIR5*/+ args->subpixel_offset;
-		//		while (first_subpixel < 0
-		//				&& dst->rect.left + (first_subpixel - 2) / FONT_SUBPIXEL_SCALE < 0) {
-		//			first_subpixel++;
-		//			i++;
-		//		}
+//		while (first_subpixel < 0
+//				&& dst->rect.left + (first_subpixel - 2) / FONT_SUBPIXEL_SCALE < 0) {
+//			first_subpixel++;
+//			i++;
+//		}
 //			if (first_subpixel < dst->rect.left * FONT_SUBPIXEL_SCALE)
 //				first_subpixel = 0;
 
@@ -214,7 +250,7 @@ void ft_gray_spans(int y, int count, const FT_Span *spans, void *user) {
 //		printf("y=%d %d span: %d %d\n", y, bmp->rect.top, span->x, span->len);
 		int l = min(span->len, dst->rect.width - span->x);
 		if (l <= 0)
-			break;
+		break;
 		unsigned char *p = data + span->x * dst->bytes_per_pixel;
 		unsigned char alpha = span->coverage;
 		for (j = 0; j < l; j++) {
@@ -240,6 +276,9 @@ void text_draw(bitmap_t *canvas, const wchar_t *text, font_conf_t *font,
 		glyph_run_init(grun, 0, 0);
 		grun_ = grun;
 	}
+
+	unsigned char linear2srgb[256];
+	gamma_linear2srgb(linear2srgb, 2.2);
 
 	// in 26.6 fractional pixels
 	int left_26_6 = (rect->left << 6) * FONT_SUBPIXEL_SCALE;
@@ -280,11 +319,11 @@ void text_draw(bitmap_t *canvas, const wchar_t *text, font_conf_t *font,
 	ftr_run.color = &font->color;
 #ifdef FONT_SUBPIXEL_RENDERING
 	if (font->render_mode == FT_RENDER_MODE_LCD)
-		ftr_run.pixel_geometry = FONT_SUBPIXEL_RGB;
+	ftr_run.pixel_geometry = FONT_SUBPIXEL_RGB;
 	else
-		ftr_run.pixel_geometry = 0;
+	ftr_run.pixel_geometry = 0;
 #endif
-#endif
+#endif /* USE_FT_RASTER */
 
 	int destroy_glyph = 0;
 	FT_UInt glyph_index = 0;
@@ -342,6 +381,8 @@ void text_draw(bitmap_t *canvas, const wchar_t *text, font_conf_t *font,
 			grun->last_glyph = glyph_index;
 		}
 
+//		printf("scaler %d %d\n", scaler->width, scaler->height);
+
 		destroy_glyph = 0;
 		if (FTC_ImageCache_LookupScaler(ft_cache, scaler, font->load_flags,
 				glyph_index, &glyph, NULL)) {
@@ -395,14 +436,14 @@ void text_draw(bitmap_t *canvas, const wchar_t *text, font_conf_t *font,
 			ftr_run.bitmap.rect.left = x_26_6 / 64.0 + 0.5;
 #ifdef FONT_SUBPIXEL_RENDERING
 			ftr_run.subpixel_offset = ftr_run.bitmap.rect.left
-					% FONT_SUBPIXEL_SCALE;
+			% FONT_SUBPIXEL_SCALE;
 			ftr_run.bitmap.rect.left /= FONT_SUBPIXEL_SCALE;
 #endif
 			ftr_run.bitmap.rect.width = canvas->rect.left + canvas->rect.width
-					- ftr_run.bitmap.rect.left;
+			- ftr_run.bitmap.rect.left;
 			ftr_run.bitmap.rect.top = grun->offset_y - font->descender;
 			ftr_run.bitmap.rect.height = canvas->rect.top + canvas->rect.height
-					- ftr_run.bitmap.rect.top;
+			- ftr_run.bitmap.rect.top;
 			ftr_par.source = outline;
 			FT_Outline_Render(ft_library, outline, &ftr_par);
 			glyph_advance = o->root.advance.x >> 10; // 16.16 -> 26.6
@@ -414,7 +455,7 @@ void text_draw(bitmap_t *canvas, const wchar_t *text, font_conf_t *font,
 //			min_x = INT_MAX;
 //			max_x = 0;
 		} else
-#endif
+#endif /* USE_FT_RASTER */
 		if (glyph->format == FT_GLYPH_FORMAT_OUTLINE) {
 			FT_Glyph g = glyph;
 			// This function does nothing if the glyph format isn't scalable.
@@ -427,35 +468,67 @@ void text_draw(bitmap_t *canvas, const wchar_t *text, font_conf_t *font,
 		}
 		if (glyph->format == FT_GLYPH_FORMAT_BITMAP) {
 			FT_BitmapGlyph b = (FT_BitmapGlyph) glyph;
-			glyph_draw(canvas, b, &font->color, x_26_6 / 64.0 + 0.5,
-					grun->offset_y - font->descender);
-			glyph_advance = b->root.advance.x >> 10; // 16.16 -> 26.6
+
+#ifdef USE_DISPLACED_FILTER
+			if (b->bitmap.pixel_mode == FT_PIXEL_MODE_LCD) {
+				FT_Bitmap bmp = b->bitmap; // copy
+				bmp.pixel_mode = FT_PIXEL_MODE_LCD;
+				bmp.width /= 3;
+				bmp.pitch = bmp.width;
+				bmp.buffer = malloc(bmp.rows * bmp.pitch);
+				unsigned char *src = b->bitmap.buffer;
+				unsigned char *dst = bmp.buffer;
+				float displaced_filter_weights[] = {0.3, 0.4, 0.3};
+				int j;
+				for (j = 0; j < bmp.rows; j++) {
+					displaced_downsample(dst, src, bmp.width / 3,
+							displaced_filter_weights);
+					src += b->bitmap.pitch;
+					dst += bmp.pitch;
+				}
+				glyph_draw(canvas, x_26_6 / 64.0 + 0.5,
+						grun->offset_y - font->descender, &bmp, b->left / 3,
+						b->top, &font->color, NULL);
+				glyph_advance = (b->root.advance.x / 3) >> 10; // 16.16 -> 26.6
+				if (glyph_advance % 64 != 0)
+				glyph_advance = (glyph_advance / 64 + 1) * 64;
+				free(bmp.buffer);
+			} else
+#endif
+			{
+				glyph_draw(canvas, x_26_6 / 64.0 + 0.5,
+						grun->offset_y - font->descender, &b->bitmap, b->left,
+						b->top, &font->color, NULL, NULL);
+				glyph_advance = b->root.advance.x >> 10; // 16.16 -> 26.6
+			}
+//			printf("`%lc'@%02dx%02d wxh=%03dx%02d pitch=%03d advance=%02.1f\n",
+//					c, b->left, b->top, b->bitmap.width, b->bitmap.rows,
+//					b->bitmap.pitch, glyph_advance / 64.0);
 		}
 
 		END: pos++;
-//#ifdef USE_FT_RASTER
-//#ifdef FONT_SUBPIXEL_RENDERING
-//		if (font->render_mode == FT_RENDER_MODE_LCD)
-//			glyph_advance = glyph_advance / FONT_SUBPIXEL_SCALE;
-//#endif
-//#endif
+		if (glyph_advance != 0)
+			x_26_6 += glyph_advance;
+		else
+			x_26_6 += font->x_ppem_26_6 * FONT_SUBPIXEL_SCALE;
+
+		if (destroy_glyph)
+			FT_Done_Glyph(glyph);
+
 //		printf("char %lc: left=%d/%f/%d subpixel=%d advance=%f/%d\n", c,
 //				raster_args.bitmap.rect.left, offset_x_26_6 / 64.0,
 //				offset_x_26_6, raster_args.subpixel_offset,
 //				glyph_advance / 64.0, glyph_advance);
-		x_26_6 +=
-				glyph_advance != 0 ?
-						glyph_advance :
-						(font->x_ppem_26_6 * FONT_SUBPIXEL_SCALE);
-		if (destroy_glyph)
-			FT_Done_Glyph(glyph);
 #else
 		glyph_draw(ft_slot, offset_x, offset_y);
-		x_26_6 +=
-		ft_slot.advance.x == 0 ? avg_char_width_16 : ft_slot.advance.x; // 26.6
-#endif
+		if (ft_slot.advance.x != 0)
+		x_26_6 += ft_slot.advance.x; // 26.6
+		else
+		x_26_6 += avg_char_width_16;
+#endif /* USE_FT_CACHE */
 	}
 
+	// draw a subpixel bar
 //#ifdef FONT_SUBPIXEL_RENDERING
 //	int i;
 //	unsigned char *data = canvas->data + rect->top * canvas->bytes_per_line
@@ -488,100 +561,130 @@ void text_draw(bitmap_t *canvas, const wchar_t *text, font_conf_t *font,
 //	free(trun);
 //}
 
-void glyph_draw(bitmap_t *canvas,
-#ifdef USE_FT_CACHE
-		FT_BitmapGlyph glyph,
-#else
-		FT_GlyphSlot glyph,
-#endif
-		color_t *color, int offset_x, int offset_y) {
+int glyph_draw(bitmap_t *dst, int dst_x, int dst_y, FT_Bitmap *src,
+		FT_Int src_left, FT_Int src_top, color_t *color,
+		unsigned char srgb2linear[], unsigned char linear2srgb[]) {
+	if (!dst || !src)
+		return 0;
 
-	if (!glyph)
-		return;
+	char src_mono = src->pixel_mode == FT_PIXEL_MODE_MONO; /* 1~bit per pixel */
+	int src_pixel_size = 1; /* gray */
+	if (src->pixel_mode == FT_PIXEL_MODE_LCD)
+		src_pixel_size = 3; // TODO: FT_PIXEL_MODE_LCD_V
 
-	char monochrome = glyph->bitmap.pixel_mode == FT_PIXEL_MODE_MONO;
+	int src_line_size = src->pitch;
+	int src_w = src->width / src_pixel_size;
+	int src_h = src->rows;
 
-	int src_pixel_size = 1;
-	if (glyph->bitmap.pixel_mode == FT_PIXEL_MODE_LCD
-			|| glyph->bitmap.pixel_mode == FT_PIXEL_MODE_LCD_V)
-		src_pixel_size = 3;
-	int src_line_size = glyph->bitmap.pitch;
-	int src_w = glyph->bitmap.width / src_pixel_size;
-	int src_h = glyph->bitmap.rows;
+	int dst_pixel_size = dst->bytes_per_pixel;
+	int dst_line_size = dst->bytes_per_line;
+	int dst_w = dst->rect.width;
+	int dst_h = dst->rect.height;
 
-	int dst_pixel_size = canvas->bytes_per_pixel;
-	int dst_line_size = canvas->bytes_per_line;
-	int dst_w = canvas->rect.width;
-	int dst_h = canvas->rect.height;
-
-//	printf("draw %d,%d monochrome=%d src_pixel_size=%d %d src_width=%d,%d\n",
-//			offset_x, offset_y, monochrome, src_pixel_size, src_line_size,
-//			src_w, src_h);
+//	printf("draw at %d,%d size=%dx%d src_mono=%d pixel_size=%d/%d\n",
+//			offset_x, offset_y, src_w, src_h, src_mono, src_pixel_size,
+//			dst_pixel_size);
 
 	int src_x = 0;
 	int src_y = 0;
-
-#ifdef USE_FT_CACHE
-	int dst_x = offset_x + glyph->left;
-	int dst_y = offset_y - glyph->top;
-#else
-	int dst_x = offset_x + glyph->bitmap_left;
-	int dst_y = offset_y - glyph->bitmap_top;
-#endif
-
+	dst_x += src_left;
+	dst_y -= src_top;
 	if (dst_x < 0) {
-		src_x += -dst_x; // clip left
+		src_x += abs(dst_x); /* left clipping */
+		if (src_x >= src_w)
+			return 0;
 		dst_x = 0;
+	} else if (dst_x >= dst_w) {
+		return 0;
 	}
 	if (dst_y < 0) {
-		src_y += -dst_y; // clip top
+		src_y += abs(dst_y); /* top clipping */
+		if (src_y >= src_h)
+			return 0;
 		dst_y = 0;
+	} else if (dst_y >= dst_h) {
+		return 0;
 	}
 
-	unsigned char *src_line = src_line_size > 0 ? glyph->bitmap.buffer // start of the first row
-			: glyph->bitmap.buffer + (src_h - 1) * -src_line_size; // start of the last row
-	unsigned char *dst_line = canvas->data;
-	src_line += src_y * src_line_size + src_x * src_pixel_size;
-	dst_line += dst_y * dst_line_size + dst_x * dst_pixel_size;
+	unsigned char *src_line = src_line_size > 0 ? src->buffer // start of the first row
+			: src->buffer + (src_h - 1) * -src_line_size; // start of the last row
+	src_line += src_y * src_line_size + src_x * src_pixel_size; // TODO mono
+	unsigned char *dst_line = dst->data + dst_y * dst_line_size
+			+ dst_x * dst_pixel_size;
+	unsigned char *s, *d;
 
-	for (; src_y < src_h && dst_y < dst_h; src_y++, dst_y++) {
-		unsigned char* src = src_line;
-		unsigned char* dst = dst_line;
-		int s = src_x;
-		int d = dst_x;
-		if (monochrome) {
-			for (; s < src_w && d < dst_w; s++, d++) {
+	int w = min(src_w - src_x, dst_w - dst_x);
+	int h = min(src_h - src_y, dst_h - dst_y);
+	int i, j, k;
+	for (j = 0; j < h;
+			src_line += src_line_size, dst_line += dst_line_size, j++) {
+		s = src_line, d = dst_line;
+		if (src_mono) {
+			k = src_x;
+			for (i = 0; i < w; k++, d += dst_pixel_size, i++) {
 				// http://skia.googlecode.com/svn/trunk/src/ports/SkFontHost_FreeType_common.cpp
-				int low_bit = src_line[s >> 3] >> (~s & 7);
+				int low_bit = src_line[k >> 3] >> (~k & 7);
 				if (low_bit & 1) {
 					// dst = alpha * src + (1 - alpha) * dst
-					dst[0] = color->b;
-					dst[1] = color->g;
-					dst[2] = color->r;
+					d[0] = color->b, d[1] = color->g, d[2] = color->r;
 				}
-				dst += dst_pixel_size;
 			}
 		} else {
-			for (; s < src_w && d < dst_w; s++, d++) {
-				if (src_pixel_size == 1 && dst_pixel_size == 1) {
-					dst[0] = alpha_blend(dst[0], color->r, src[0]);
-				} else if (src_pixel_size == 1 && dst_pixel_size == 3) {
-					unsigned char alpha = src[0];
-					dst[0] = alpha_blend(dst[0], color->b, alpha);
-					dst[1] = alpha_blend(dst[1], color->g, alpha);
-					dst[2] = alpha_blend(dst[2], color->r, alpha);
-				} else if (src_pixel_size == 3 && dst_pixel_size == 3) {
-					dst[0] = alpha_blend(dst[0], color->b, src[2]);
-					dst[1] = alpha_blend(dst[1], color->g, src[1]);
-					dst[2] = alpha_blend(dst[2], color->r, src[0]);
+			for (i = 0; i < w; s += src_pixel_size, d += dst_pixel_size, i++) {
+//				printf("dst %dx%d %d,%d %d %d/%d\n", dst_w, dst_h, dst_x, dst_y,
+//						i, dst_pixel_size, dst_line_size);
+//				printf("src %dx%d @%d,%d %d,%d %d/%d\n", src_w, src_h, src_x,
+//						src_y, i, j, src_pixel_size, src_line_size);
+				if (dst_pixel_size >= 3) {
+					if (src_pixel_size == 3) {
+//						d[0] = linear2srgb[0xff - s[2]], d[1] = linear2srgb[0xff
+//								- s[1]], d[2] = linear2srgb[0xff - s[0]];
+//						d[0] = linear2srgb[d[0]], d[1] = linear2srgb[d[1]], d[2] =
+//								linear2srgb[d[2]];
+						d[0] = alpha_blend(d[0], color->b, s[2], srgb2linear,
+								linear2srgb);
+						d[1] = alpha_blend(d[1], color->g, s[1], srgb2linear,
+								linear2srgb);
+						d[2] = alpha_blend(d[2], color->r, s[0], srgb2linear,
+								linear2srgb);
+					} else if (src_pixel_size == 1) {
+						d[0] = alpha_blend(d[0], color->b, s[0], srgb2linear,
+								linear2srgb);
+						d[1] = alpha_blend(d[1], color->g, s[0], srgb2linear,
+								linear2srgb);
+						d[2] = alpha_blend(d[2], color->r, s[0], srgb2linear,
+								linear2srgb);
+					}
+				} else if (dst_pixel_size == 1 && src_pixel_size == 1) {
+					d[0] = alpha_blend(d[0], color->r, s[0], srgb2linear,
+							linear2srgb);
 				}
-				src += src_pixel_size;
-				dst += dst_pixel_size;
 			}
 		}
-		src_line += src_line_size;
-		dst_line += dst_line_size;
 	}
+
+	return 1;
+}
+
+FT_Glyph glyph_get(/*wchar_t*/FT_ULong char_code, font_conf_t *font,
+		FT_ULong load_flags) {
+	FT_Face face = font->face;
+
+	FT_UInt glyph_index = FT_Get_Char_Index(face, char_code);
+	if (glyph_index == 0) {
+		printf("error glyph_index\n");
+		return NULL;
+	}
+
+	FTC_Scaler scaler = &font->scaler;
+	FT_Glyph glyph;
+	if (FTC_ImageCache_LookupScaler(ft_cache, scaler, load_flags, glyph_index,
+			&glyph, NULL)) {
+		printf("error FTC_ImageCache_LookupScaler\n");
+		return NULL;
+	}
+
+	return glyph;
 }
 
 //FT_Bitmap *ft_bitmap_new(int width, int height, char pixel_mode) {
