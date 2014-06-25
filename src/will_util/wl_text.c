@@ -4,6 +4,17 @@
 
 //#define USE_DISPLACED_FILTER
 
+#define PIXEL_GEOMETRY_RGB 1
+#define PIXEL_GEOMETRY_BGR 2
+#define FONT_SCALE_X 1
+
+#ifdef FREETYPE_RASTER_CUSTOM
+#ifdef FONT_SUBPIXEL_RENDERING
+#define FONT_SCALE_X 3
+extern unsigned char subpixel_filter[];
+#endif
+#endif
+
 void glyph_run_init(glyph_run_t *grun, int offset_x, int offset_y) {
 	grun->curr_pos = 0;
 	grun->last_glyph = 0;
@@ -42,13 +53,13 @@ void font_init(font_conf_t *font, int font_height, int line_spacing) {
 	font->scaler_fallback.width = 0;
 	font->scaler_fallback.height = font_height;
 
-#ifdef USE_FT_RASTER
-#ifdef FONT_SUBPIXEL_RENDERING
+#ifdef FREETYPE_RASTER_CUSTOM
+//#ifdef FONT_SUBPIXEL_RENDERING
 	if (font->render_mode == FT_RENDER_MODE_LCD) {
-		font->scaler.width = font_height * FONT_SUBPIXEL_SCALE;
-		font->scaler_fallback.width = font_height * FONT_SUBPIXEL_SCALE;
+		font->scaler.width = font_height * FONT_SCALE_X;
+		font->scaler_fallback.width = font_height * FONT_SCALE_X;
 	}
-#endif
+//#endif
 #endif
 
 	FT_Size ft_size;
@@ -81,24 +92,30 @@ void font_init(font_conf_t *font, int font_height, int line_spacing) {
 	font->line_spacing = line_spacing;
 	font->embolden_x = 0;
 	font->embolden_y = 0;
+
+#ifndef KINDLE
+	gamma_linear2srgb(font->linear2srgb, 2.2);
+#endif
 }
 
-#ifdef USE_FT_RASTER
+#ifdef FREETYPE_RASTER_CUSTOM
 
-#ifdef FONT_SUBPIXEL_RENDERING
+//#ifdef FONT_SUBPIXEL_RENDERING
 typedef struct {
 	bitmap_t bitmap;
 	color_t *color;
-	ushort pixel_geometry;
+	char pixel_geometry;
 	char subpixel_offset;
-}ftr_run_t;
-unsigned char subpixel_filter[] = {15, 60, 105, 60, 15};
-#else
-typedef struct {
-	bitmap_t bitmap;
-	color_t *color;
-}ftr_run_t;
-#endif
+	unsigned char *linear2srgb;
+} ftr_run_t;
+
+unsigned char subpixel_filter[] = { 15, 60, 105, 60, 15 };
+//#else
+//typedef struct {
+//	bitmap_t bitmap;
+//	color_t *color;
+//} ftr_run_t;
+//#endif
 
 //#ifdef FONT_SUBPIXEL_RENDERING
 //unsigned char m_primary[256];
@@ -122,16 +139,16 @@ void ft_gray_spans(int y, int count, const FT_Span *spans, void *user) {
 	color_t *rgb = args->color;
 	bitmap_t *dst = &args->bitmap;
 //	if (y > dst->rect.top)
-	int y_flip = dst->rect.top - y;// dst->rect.top with font-ascender added
+	int y_flip = dst->rect.top - y; // dst->rect.top with font-ascender added
 	if (y_flip < 0 || y_flip >= dst->rect.top + dst->rect.height)
-	return;
+		return;
 
 	const FT_Span *span = spans;
 	unsigned char *data = dst->data + y_flip * dst->bytes_per_line
-	+ dst->rect.left * dst->bytes_per_pixel;
+			+ dst->rect.left * dst->bytes_per_pixel;
 	int i, j;
 
-#ifdef FONT_SUBPIXEL_RENDERING
+#ifndef KINDLE
 	if (args->pixel_geometry > 0 && dst->bytes_per_pixel >= 3) {
 		const FT_Span *last = span + count - 1;
 		int first_subpixel = span->x;
@@ -153,7 +170,7 @@ void ft_gray_spans(int y, int count, const FT_Span *spans, void *user) {
 			for (j = start; j < end; j++) {
 				for (k = 0; k < 5; k++) {
 					f = filtered[j + k] + coverage * subpixel_filter[k] / 255.0;
-					filtered[j + k] += f < 0 ? 0 : (f > 255 ? 255 : f);
+					filtered[j + k] += int2byte(f);
 				}
 			}
 		}
@@ -192,51 +209,57 @@ void ft_gray_spans(int y, int count, const FT_Span *spans, void *user) {
 		i = 0;
 		first_subpixel += -2/*FIR5*/+ args->subpixel_offset;
 //		while (first_subpixel < 0
-//				&& dst->rect.left + (first_subpixel - 2) / FONT_SUBPIXEL_SCALE < 0) {
+//				&& dst->rect.left + (first_subpixel - 2) / FONT_SCALE_X < 0) {
 //			first_subpixel++;
 //			i++;
 //		}
-//			if (first_subpixel < dst->rect.left * FONT_SUBPIXEL_SCALE)
+//			if (first_subpixel < dst->rect.left * FONT_SCALE_X)
 //				first_subpixel = 0;
 
 		int pixel = 0;
 		unsigned subpixel = 0;
 		if (first_subpixel > 0) {
-			pixel = first_subpixel / FONT_SUBPIXEL_SCALE;
-			subpixel = first_subpixel % FONT_SUBPIXEL_SCALE;
+			pixel = first_subpixel / FONT_SCALE_X;
+			subpixel = first_subpixel % FONT_SCALE_X;
 		} else if (first_subpixel < 0) {
 			//    pixle layout:      |    -2    |    -1    |   0   |
 			// subpixle layout:      | -6 -5 -4 | -3 -2 -1 | 0 1 2 |
 			first_subpixel -= 2;
 			// subpixle layout (-2): | -8 -7 -6 | -5 -4 -3 |
-			pixel = first_subpixel / FONT_SUBPIXEL_SCALE;
-			subpixel = first_subpixel % FONT_SUBPIXEL_SCALE + 2;
+			pixel = first_subpixel / FONT_SCALE_X;
+			subpixel = first_subpixel % FONT_SCALE_X + 2;
 		}
 		unsigned char *p = data + pixel * dst->bytes_per_pixel;
 		unsigned char alpha;
 		for (; i < width; i++) { // TODO width
 			alpha = filtered[i];
-			if (args->pixel_geometry == FONT_SUBPIXEL_RGB) {
+			if (args->pixel_geometry == PIXEL_GEOMETRY_RGB) {
 				if (subpixel == 2) { // subpixel compoment B
-					p[0] = alpha_blend(p[0], rgb->b, alpha);
+					p[0] = alpha_blend(p[0], rgb->b, alpha, args->linear2srgb,
+							0);
 				} else if (subpixel == 1) { // subpixel compoment G
-					p[1] = alpha_blend(p[1], rgb->g, alpha);
+					p[1] = alpha_blend(p[1], rgb->g, alpha, args->linear2srgb,
+							0);
 				} else { // subpixel compoment R
-					p[2] = alpha_blend(p[2], rgb->r, alpha);
+					p[2] = alpha_blend(p[2], rgb->r, alpha, args->linear2srgb,
+							0);
 				}
-			} else if (args->pixel_geometry == FONT_SUBPIXEL_BGR) {
+			} else if (args->pixel_geometry == PIXEL_GEOMETRY_BGR) {
 				if (subpixel == 2) { // subpixel compoment R
-					p[2] = alpha_blend(p[2], rgb->r, alpha);
+					p[2] = alpha_blend(p[2], rgb->r, alpha, args->linear2srgb,
+							0);
 				} else if (subpixel == 1) { // subpixel compoment G
-					p[1] = alpha_blend(p[1], rgb->g, alpha);
+					p[1] = alpha_blend(p[1], rgb->g, alpha, args->linear2srgb,
+							0);
 				} else { // subpixel compoment B
-					p[0] = alpha_blend(p[0], rgb->b, alpha);
+					p[0] = alpha_blend(p[0], rgb->b, alpha, args->linear2srgb,
+							0);
 				}
 			} else {
 				perror("invalid pixel_geometry");
 			}
 
-			if (++subpixel == FONT_SUBPIXEL_SCALE) {
+			if (++subpixel == FONT_SCALE_X) {
 				subpixel = 0;
 				p += dst->bytes_per_pixel;
 			}
@@ -245,25 +268,25 @@ void ft_gray_spans(int y, int count, const FT_Span *spans, void *user) {
 		free(filtered);
 		return;
 	}
-#endif
+#endif /* KINDLE */
 	for (i = 0; i < count; i++, span++) {
 //		printf("y=%d %d span: %d %d\n", y, bmp->rect.top, span->x, span->len);
 		int l = min(span->len, dst->rect.width - span->x);
 		if (l <= 0)
-		break;
+			break;
 		unsigned char *p = data + span->x * dst->bytes_per_pixel;
 		unsigned char alpha = span->coverage;
 		for (j = 0; j < l; j++) {
-			p[0] = alpha_blend(p[0], rgb->b, alpha);
+			p[0] = alpha_blend(p[0], rgb->b, alpha, args->linear2srgb, 0);
 			if (dst->bytes_per_pixel == 3) {
-				p[1] = alpha_blend(p[1], rgb->g, alpha);
-				p[2] = alpha_blend(p[2], rgb->r, alpha);
+				p[1] = alpha_blend(p[1], rgb->g, alpha, args->linear2srgb, 0);
+				p[2] = alpha_blend(p[2], rgb->r, alpha, args->linear2srgb, 0);
 			}
 			p += dst->bytes_per_pixel;
 		}
 	}
 }
-#endif /* USE_FT_RASTER */
+#endif /* FREETYPE_RASTER_CUSTOM */
 
 void text_draw(bitmap_t *canvas, const wchar_t *text, font_conf_t *font,
 		rect_s *rect, glyph_run_t *grun) {
@@ -277,15 +300,11 @@ void text_draw(bitmap_t *canvas, const wchar_t *text, font_conf_t *font,
 		grun_ = grun;
 	}
 
-	unsigned char linear2srgb[256];
-	gamma_linear2srgb(linear2srgb, 2.2);
-
 	// in 26.6 fractional pixels
-	int left_26_6 = (rect->left << 6) * FONT_SUBPIXEL_SCALE;
-	int right_26_6 = left_26_6 + (rect->width << 6) * FONT_SUBPIXEL_SCALE;
-	int x_26_6 =
-			grun->offset_x_26_6 != 0 ?
-					(grun->offset_x_26_6 * FONT_SUBPIXEL_SCALE) : left_26_6;
+	int left_26_6 = (rect->left << 6) * FONT_SCALE_X;
+	int right_26_6 = left_26_6 + (rect->width << 6) * FONT_SCALE_X;
+	int x_26_6 = grun->offset_x_26_6 == 0 ? left_26_6 : // formatting
+			grun->offset_x_26_6 * FONT_SCALE_X;
 
 	if (grun->offset_y == 0)
 		grun->offset_y = rect->top;
@@ -302,7 +321,7 @@ void text_draw(bitmap_t *canvas, const wchar_t *text, font_conf_t *font,
 		return;
 	}
 
-#ifdef USE_FT_RASTER
+#ifdef FREETYPE_RASTER_CUSTOM
 	FT_Raster_Params ftr_par;
 	ftr_par.target = 0;
 	ftr_par.flags = FT_RASTER_FLAG_DIRECT | FT_RASTER_FLAG_AA;
@@ -317,13 +336,18 @@ void text_draw(bitmap_t *canvas, const wchar_t *text, font_conf_t *font,
 	ftr_run.bitmap.bytes_per_line = canvas->bytes_per_line;
 	ftr_run.bitmap.bytes_per_pixel = canvas->bytes_per_pixel;
 	ftr_run.color = &font->color;
-#ifdef FONT_SUBPIXEL_RENDERING
+//#ifdef FONT_SUBPIXEL_RENDERING
 	if (font->render_mode == FT_RENDER_MODE_LCD)
-	ftr_run.pixel_geometry = FONT_SUBPIXEL_RGB;
+		ftr_run.pixel_geometry = PIXEL_GEOMETRY_RGB; // TODO BGR
 	else
-	ftr_run.pixel_geometry = 0;
+		ftr_run.pixel_geometry = 0;
+//#endif
+#ifndef KINDLE
+	ftr_run.linear2srgb = font->linear2srgb;
+#else
+	ftr_run.linear2srgb = NULL;
 #endif
-#endif /* USE_FT_RASTER */
+#endif /* FREETYPE_RASTER_CUSTOM */
 
 	int destroy_glyph = 0;
 	FT_UInt glyph_index = 0;
@@ -339,8 +363,7 @@ void text_draw(bitmap_t *canvas, const wchar_t *text, font_conf_t *font,
 			break;
 
 		if ((c == '\r' || c == '\n')
-				|| (x_26_6 + font->x_ppem_26_6 * FONT_SUBPIXEL_SCALE
-						> right_26_6)) {
+				|| (x_26_6 + font->x_ppem_26_6 * FONT_SCALE_X > right_26_6)) {
 			// line break or line wrapping
 			pos++;
 			if (c == '\r' && pos + 1 < len && text[pos + 1] == '\n')
@@ -361,7 +384,7 @@ void text_draw(bitmap_t *canvas, const wchar_t *text, font_conf_t *font,
 		FT_Face ft_face = font->face;
 		FTC_Scaler scaler = &font->scaler;
 
-#ifdef USE_FT_CACHE
+#ifdef FREETYPE_CACHE_ENABLE
 		glyph_index = FT_Get_Char_Index(ft_face, (FT_ULong) c);
 		if (glyph_index == 0) {
 			ft_face = font->fallback;
@@ -377,7 +400,7 @@ void text_draw(bitmap_t *canvas, const wchar_t *text, font_conf_t *font,
 		if (font->kerning_mode) {
 			if (FT_Get_Kerning(ft_face, grun->last_glyph, glyph_index,
 					font->kerning_mode, &kerning) == 0)
-				x_26_6 += kerning.x * FONT_SUBPIXEL_SCALE;
+				x_26_6 += kerning.x * FONT_SCALE_X;
 			grun->last_glyph = glyph_index;
 		}
 
@@ -421,7 +444,7 @@ void text_draw(bitmap_t *canvas, const wchar_t *text, font_conf_t *font,
 
 		glyph_advance = 0;
 
-#ifdef USE_FT_RASTER
+#ifdef FREETYPE_RASTER_CUSTOM
 		if (glyph->format == FT_GLYPH_FORMAT_OUTLINE) {
 //			FT_Stroker stroker;
 //			FT_Stroker_New(ft_library, &stroker);
@@ -434,16 +457,18 @@ void text_draw(bitmap_t *canvas, const wchar_t *text, font_conf_t *font,
 			FT_Outline *outline = &o->outline;
 
 			ftr_run.bitmap.rect.left = x_26_6 / 64.0 + 0.5;
-#ifdef FONT_SUBPIXEL_RENDERING
-			ftr_run.subpixel_offset = ftr_run.bitmap.rect.left
-			% FONT_SUBPIXEL_SCALE;
-			ftr_run.bitmap.rect.left /= FONT_SUBPIXEL_SCALE;
-#endif
+//#ifdef FONT_SUBPIXEL_RENDERING
+			if (font->render_mode == FT_RENDER_MODE_LCD) {
+				ftr_run.subpixel_offset = ftr_run.bitmap.rect.left
+						% FONT_SCALE_X;
+				ftr_run.bitmap.rect.left /= FONT_SCALE_X;
+			}
+//#endif
 			ftr_run.bitmap.rect.width = canvas->rect.left + canvas->rect.width
-			- ftr_run.bitmap.rect.left;
+					- ftr_run.bitmap.rect.left;
 			ftr_run.bitmap.rect.top = grun->offset_y - font->descender;
 			ftr_run.bitmap.rect.height = canvas->rect.top + canvas->rect.height
-			- ftr_run.bitmap.rect.top;
+					- ftr_run.bitmap.rect.top;
 			ftr_par.source = outline;
 			FT_Outline_Render(ft_library, outline, &ftr_par);
 			glyph_advance = o->root.advance.x >> 10; // 16.16 -> 26.6
@@ -455,7 +480,7 @@ void text_draw(bitmap_t *canvas, const wchar_t *text, font_conf_t *font,
 //			min_x = INT_MAX;
 //			max_x = 0;
 		} else
-#endif /* USE_FT_RASTER */
+#endif /* FREETYPE_RASTER_CUSTOM */
 		if (glyph->format == FT_GLYPH_FORMAT_OUTLINE) {
 			FT_Glyph g = glyph;
 			// This function does nothing if the glyph format isn't scalable.
@@ -510,7 +535,7 @@ void text_draw(bitmap_t *canvas, const wchar_t *text, font_conf_t *font,
 		if (glyph_advance != 0)
 			x_26_6 += glyph_advance;
 		else
-			x_26_6 += font->x_ppem_26_6 * FONT_SUBPIXEL_SCALE;
+			x_26_6 += font->x_ppem_26_6 * FONT_SCALE_X;
 
 		if (destroy_glyph)
 			FT_Done_Glyph(glyph);
@@ -525,7 +550,7 @@ void text_draw(bitmap_t *canvas, const wchar_t *text, font_conf_t *font,
 		x_26_6 += ft_slot.advance.x; // 26.6
 		else
 		x_26_6 += avg_char_width_16;
-#endif /* USE_FT_CACHE */
+#endif /* FREETYPE_CACHE_ENABLE */
 	}
 
 	// draw a subpixel bar
@@ -550,7 +575,7 @@ void text_draw(bitmap_t *canvas, const wchar_t *text, font_conf_t *font,
 		free(grun_);
 	} else {
 		grun->curr_pos = pos;
-		grun->offset_x_26_6 = x_26_6 / FONT_SUBPIXEL_SCALE;
+		grun->offset_x_26_6 = x_26_6 / FONT_SCALE_X;
 	}
 }
 
@@ -563,7 +588,7 @@ void text_draw(bitmap_t *canvas, const wchar_t *text, font_conf_t *font,
 
 int glyph_draw(bitmap_t *dst, int dst_x, int dst_y, FT_Bitmap *src,
 		FT_Int src_left, FT_Int src_top, color_t *color,
-		unsigned char srgb2linear[], unsigned char linear2srgb[]) {
+		unsigned char linear2srgb[], unsigned char srgb2linear[]) {
 	if (!dst || !src)
 		return 0;
 
@@ -641,23 +666,23 @@ int glyph_draw(bitmap_t *dst, int dst_x, int dst_y, FT_Bitmap *src,
 //								- s[1]], d[2] = linear2srgb[0xff - s[0]];
 //						d[0] = linear2srgb[d[0]], d[1] = linear2srgb[d[1]], d[2] =
 //								linear2srgb[d[2]];
-						d[0] = alpha_blend(d[0], color->b, s[2], srgb2linear,
-								linear2srgb);
-						d[1] = alpha_blend(d[1], color->g, s[1], srgb2linear,
-								linear2srgb);
-						d[2] = alpha_blend(d[2], color->r, s[0], srgb2linear,
-								linear2srgb);
+						d[0] = alpha_blend(d[0], color->b, s[2], linear2srgb,
+								srgb2linear);
+						d[1] = alpha_blend(d[1], color->g, s[1], linear2srgb,
+								srgb2linear);
+						d[2] = alpha_blend(d[2], color->r, s[0], linear2srgb,
+								srgb2linear);
 					} else if (src_pixel_size == 1) {
-						d[0] = alpha_blend(d[0], color->b, s[0], srgb2linear,
-								linear2srgb);
-						d[1] = alpha_blend(d[1], color->g, s[0], srgb2linear,
-								linear2srgb);
-						d[2] = alpha_blend(d[2], color->r, s[0], srgb2linear,
-								linear2srgb);
+						d[0] = alpha_blend(d[0], color->b, s[0], linear2srgb,
+								srgb2linear);
+						d[1] = alpha_blend(d[1], color->g, s[0], linear2srgb,
+								srgb2linear);
+						d[2] = alpha_blend(d[2], color->r, s[0], linear2srgb,
+								srgb2linear);
 					}
 				} else if (dst_pixel_size == 1 && src_pixel_size == 1) {
-					d[0] = alpha_blend(d[0], color->r, s[0], srgb2linear,
-							linear2srgb);
+					d[0] = alpha_blend(d[0], color->r, s[0], linear2srgb,
+							srgb2linear);
 				}
 			}
 		}
@@ -780,12 +805,12 @@ char *wcs2mbs(const wchar_t *src) {
 //#endif
 
 //for (i = 0; i < count; i++, span++) {
-//			ushort pix = span->x / FONT_SUBPIXEL_SCALE;
-//			ushort sub = span->x % FONT_SUBPIXEL_SCALE;
+//			ushort pix = span->x / FONT_SCALE_X;
+//			ushort sub = span->x % FONT_SCALE_X;
 //			printf("y=%d span: %d %d %d %d %d\n", y, span->x, span->len,
 //					span->coverage, pix, sub);
 //			unsigned char *d = data + pix * bmp->bytes_per_pixel;
-//			int l = min(span->len, bmp->rect.width * FONT_SUBPIXEL_SCALE - span->x);
+//			int l = min(span->len, bmp->rect.width * FONT_SCALE_X - span->x);
 //			if (l <= 0)
 //				break;
 //			unsigned char alpha = span->coverage;
