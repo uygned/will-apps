@@ -7,6 +7,19 @@
 //#define FONT_DEBUG
 //#define LABEL_CONTOUR_POINTS
 
+//static float displaced_filter_weights[] = { -0.0955, -0.3090, 0.25, 0.25, 0.809,
+//		0.25, 0.25, -0.3090, -0.0955 };
+//static float displaced_filter_weights[] = { -0.1190, 0.1003, 0.3197, 0.5392,
+//				0.3197, 0.1003 , -0.1190 };
+//static float displaced_filter_weights[] = { -0.0829, 0.0586, 0.3414, 0.4830,
+//		0.3414, 0.0586, -0.0829 };
+//static float displaced_filter_weights[] = { -0.0586, -0.0829, 0.0586, 0.3414,
+//		0.4830, 0.3414, 0.0586, -0.0829, -0.0586 };
+//static float displaced_filter_weights[] = { 0, 0, 0.3333, 0.3334, 0.3333, 0, 0 };
+static float displaced_filter_weights[] = { 0.3333, 0.3334, 0.3333 };
+//static float displaced_filter_weights[] = { 0.3, 0.4, 0.3 };
+//static float displaced_filter_weights[] = { 0.45, 0.35, 0.2 };
+
 /* Downsamples the oversampled 3 pixels to one pixel (9 subpixels to 3 subpixels).
  * [RGB](i) <- [RGB](3i) [RGB](3i+1) [RGB](3i+2)
  * Papers:
@@ -43,6 +56,151 @@ void displaced_downsample(unsigned char *dst, unsigned char *src, int dst_width,
 //		d[2] = ((unsigned) s[0] + s[3] + s[6]) / 3.;
 
 		r_prev = s[6];
+		d += dst_pixel_size;
+		s += src_triple_size;
+	}
+}
+
+void displaced_downsample5(unsigned char *dst, unsigned char *src,
+		int dst_width, float filter_weights[]) {
+	int dst_pixel_size = 3;
+	int src_triple_size = 9;
+
+	unsigned char *d = dst;
+	unsigned char *s = src, r_prpr = 0, r_prev = 0, g_prev = 0;
+	int i = 0;
+	while (i++ < dst_width) {
+		/* Rgb_Rgb-Rgb_Rgb_Rgb-rgb_rgb */
+		d[0] = float2byte(filter_weights[0] * r_prpr + //
+				filter_weights[1] * r_prev + //
+				filter_weights[2] * s[0] + //
+				filter_weights[3] * s[3] + //
+				filter_weights[4] * s[6]);
+		/* rgb_rGb-rGb_rGb_rGb-rGb_rgb */
+		d[1] = float2byte(filter_weights[0] * g_prev + //
+				filter_weights[1] * s[1] + //
+				filter_weights[2] * s[4] + //
+				filter_weights[3] * s[7] + //
+				filter_weights[4] * (i < dst_width ? s[10] : 0));
+		/* rgb_rgb-rgB_rgB_rgB-rgB_rgB */
+		d[2] = float2byte(filter_weights[0] * s[2] + //
+				filter_weights[1] * s[5] + //
+				filter_weights[2] * s[8] + //
+				filter_weights[3] * (i < dst_width ? s[11] : 0) + //
+				filter_weights[4] * (i < dst_width ? s[14] : 0));
+
+//		d[0] = ((unsigned) s[2] + s[5] + s[8]) / 3.;
+//		d[1] = ((unsigned) s[1] + s[4] + s[7]) / 3.;
+//		d[2] = ((unsigned) s[0] + s[3] + s[6]) / 3.;
+
+		r_prpr = s[3];
+		r_prev = s[6];
+		g_prev = s[7];
+		d += dst_pixel_size;
+		s += src_triple_size;
+	}
+}
+
+void displaced_downsample7(unsigned char *dst, unsigned char *src,
+		int dst_width, float filter_weights[]) {
+	int dst_pixel_size = 3;
+	int src_triple_size = 9;
+
+	unsigned char *d = dst;
+	unsigned char *s = src, r_prpr = 0, r_pppr = 0, r_prev = 0, g_prpr = 0,
+			g_prev = 0, b_prev = 0;
+	int i = 0;
+	while (i++ < dst_width) {
+		/* Rgb_Rgb-Rgb_Rgb_Rgb-rgb_rgb */
+		d[0] = float2byte(filter_weights[0] * r_pppr + //
+				filter_weights[1] * r_prpr + //
+				filter_weights[2] * r_prev + //
+				filter_weights[3] * s[0] + //
+				filter_weights[4] * s[3] + //
+				filter_weights[5] * s[6] + //
+				filter_weights[6] * (i < dst_width ? s[9] : 0));
+		/* rgb_rGb-rGb_rGb_rGb-rGb_rgb */
+		d[1] = float2byte(filter_weights[0] * g_prpr + //
+				filter_weights[1] * g_prev + //
+				filter_weights[2] * s[1] + //
+				filter_weights[3] * s[4] + //
+				filter_weights[4] * s[7] + //
+				filter_weights[5] * (i < dst_width ? s[10] : 0) + //
+				filter_weights[6] * (i < dst_width ? s[13] : 0));
+		/* rgb_rgb-rgB_rgB_rgB-rgB_rgB */
+		d[2] = float2byte(filter_weights[0] * b_prev + //
+				filter_weights[1] * s[2] + //
+				filter_weights[2] * s[5] + //
+				filter_weights[3] * s[8] + //
+				filter_weights[4] * (i < dst_width ? s[11] : 0) + //
+				filter_weights[5] * (i < dst_width ? s[14] : 0) + //
+				filter_weights[6] * (i < dst_width ? s[17] : 0));
+
+//		d[0] = ((unsigned) s[2] + s[5] + s[8]) / 3.;
+//		d[1] = ((unsigned) s[1] + s[4] + s[7]) / 3.;
+//		d[2] = ((unsigned) s[0] + s[3] + s[6]) / 3.;
+
+		r_pppr = s[0];
+		r_prpr = s[3];
+		r_prev = s[6];
+		g_prpr = s[4];
+		g_prev = s[7];
+		b_prev = s[8];
+		d += dst_pixel_size;
+		s += src_triple_size;
+	}
+}
+
+void displaced_downsample9(unsigned char *dst, unsigned char *src,
+		int dst_width, float filter_weights[]) {
+	int dst_pixel_size = 3;
+	int src_triple_size = 9;
+
+	unsigned char *d = dst;
+	unsigned char *s = src, r_pppp = 0, r_pppr = 0, r_prpr = 0, r_prev = 0,
+			g_pppr = 0, g_prpr = 0, g_prev = 0, b_prpr = 0, b_prev = 0;
+	int i = 0;
+	while (i++ < dst_width) {
+		/* Rgb_Rgb-Rgb_Rgb_Rgb-rgb_rgb */
+		d[0] = float2byte(filter_weights[0] * r_pppp + //
+				filter_weights[1] * r_pppr + //
+				filter_weights[2] * r_prpr + //
+				filter_weights[3] * r_prev + //
+				filter_weights[4] * s[0] + //
+				filter_weights[5] * s[3] + //
+				filter_weights[6] * s[6] + //
+				filter_weights[7] * (i < dst_width ? s[9] : 0) + //
+				filter_weights[8] * (i < dst_width ? s[12] : 0));
+		/* rgb_rGb-rGb_rGb_rGb-rGb_rgb */
+		d[1] = float2byte(filter_weights[0] * g_pppr + //
+				filter_weights[1] * g_prpr + //
+				filter_weights[2] * g_prev + //
+				filter_weights[3] * s[1] + //
+				filter_weights[4] * s[4] + //
+				filter_weights[5] * s[7] + //
+				filter_weights[6] * (i < dst_width ? s[10] : 0) + //
+				filter_weights[7] * (i < dst_width ? s[13] : 0) + //
+				filter_weights[8] * (i < dst_width ? s[16] : 0));
+		/* rgb_rgb-rgB_rgB_rgB-rgB_rgB */
+		d[2] = float2byte(filter_weights[0] * b_prpr + //
+				filter_weights[1] * b_prev + //
+				filter_weights[2] * s[2] + //
+				filter_weights[3] * s[5] + //
+				filter_weights[4] * s[8] + //
+				filter_weights[5] * (i < dst_width ? s[11] : 0) + //
+				filter_weights[6] * (i < dst_width ? s[14] : 0) + //
+				filter_weights[7] * (i < dst_width ? s[17] : 0) + //
+				filter_weights[8] * ((i + 1) < dst_width ? s[20] : 0));
+
+//		d[0] = ((unsigned) s[2] + s[5] + s[8]) / 3.;
+//		d[1] = ((unsigned) s[1] + s[4] + s[7]) / 3.;
+//		d[2] = ((unsigned) s[0] + s[3] + s[6]) / 3.;
+
+		if (i > 0)
+			r_pppr = s[-3];
+		r_pppr = s[0], r_prpr = s[3], r_prev = s[6];
+		g_prpr = s[1], g_prpr = s[4], g_prev = s[7];
+		/*           */b_prpr = s[5], b_prev = s[8];
 		d += dst_pixel_size;
 		s += src_triple_size;
 	}
@@ -153,9 +311,6 @@ static float fir5_filter[] =
 		{ 1. / 16., 5. / 16., 10. / 16., 5. / 16., 1. / 16. };
 
 static int subpixel_filter_type = DISPLACED_WEIGHTED;
-
-static float displaced_filter_weights[] = { 0.33, 0.34, 0.33 };
-//static float displaced_filter_weights[] = { 0.3, 0.4, 0.3 };
 
 //unsigned char filter[] = { 15, 60, 105, 60, 15 };
 //unsigned char filter[] = { 30, 60, 85, 60, 30 };
@@ -379,7 +534,7 @@ void font_fill_contours(bitmap_t *dst, int dst_w, int dst_h, bitmap_t *src,
 		j = 0;
 		for (i = 0; i < part_count; i++) {
 			if (rgb_weighted)
-				k = i % 3 == 0 ? 3 : (i % 3 == 1 ? 5 : 2);
+				k = i % 3 == 0 ? 3 : (i % 3 == 1 ? 6 : 1);
 			else
 				k = (grid_width - j) / (part_count - i);
 			j += k;
@@ -507,8 +662,22 @@ void font_fill_contours(bitmap_t *dst, int dst_w, int dst_h, bitmap_t *src,
 
 		if (subpixel_rendering) {
 			if (subpixel_filter_type == DISPLACED_FILTER || rgb_weighted) {
-				displaced_downsample(d, subpixel_line, dst_w,
-						displaced_filter_weights);
+				if (sizeof(displaced_filter_weights) / sizeof(float) == 3) {
+					displaced_downsample(d, subpixel_line, dst_w,
+							displaced_filter_weights);
+				} else if (sizeof(displaced_filter_weights) / sizeof(float)
+						== 5) {
+					displaced_downsample5(d, subpixel_line, dst_w,
+							displaced_filter_weights);
+				} else if (sizeof(displaced_filter_weights) / sizeof(float)
+						== 7) {
+					displaced_downsample7(d, subpixel_line, dst_w,
+							displaced_filter_weights);
+				} else if (sizeof(displaced_filter_weights) / sizeof(float)
+						== 9) {
+					displaced_downsample9(d, subpixel_line, dst_w,
+							displaced_filter_weights);
+				}
 				/* dump bytes */
 //				for (i = 0; i < subpixel_line_size; i += 3) {
 //					printf(" %02X%02X%02X", subpixel_line[i], subpixel_line[i + 1],
