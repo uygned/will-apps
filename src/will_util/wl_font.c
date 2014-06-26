@@ -7,18 +7,30 @@
 //#define FONT_DEBUG
 //#define LABEL_CONTOUR_POINTS
 
-//static float displaced_filter_weights[] = { -0.0955, -0.3090, 0.25, 0.25, 0.809,
+static int subpixel_rendering = 1;
+static int subpixel_filter_type = DISPLACED_WEIGHTED;
+
+//float fir5_filter[] = { 0.119, 0.370, 0.511, 0.370, 0.119 }; // mitchell_filter
+//float fir5_filter[] = { 0.090, 0.373, 0.536, 0.373, 0.090 }; // catmull_rom_filter
+//float fir5_filter[] = { -0.106, 0.244, 0.726, 0.244, -0.106 };
+//float fir5_filter[] = { 0.059, 0.235, 0.412, 0.235, 0.059 };
+//float fir5_filter[] = { 0., 1. / 4., 2. / 4., 1. / 4., 0. };
+static float fir5_filter[] = { 1. / 17., 4. / 17., 7. / 17., 4. / 17., 1. / 17. };
+
+//static float displaced_filter[] = { -0.0955, -0.3090, 0.25, 0.25, 0.809,
 //		0.25, 0.25, -0.3090, -0.0955 };
-//static float displaced_filter_weights[] = { -0.1190, 0.1003, 0.3197, 0.5392,
+//static float displaced_filter[] = { -0.1190, 0.1003, 0.3197, 0.5392,
 //				0.3197, 0.1003 , -0.1190 };
-//static float displaced_filter_weights[] = { -0.0829, 0.0586, 0.3414, 0.4830,
+//static float displaced_filter[] = { -0.0829, 0.0586, 0.3414, 0.4830,
 //		0.3414, 0.0586, -0.0829 };
-//static float displaced_filter_weights[] = { -0.0586, -0.0829, 0.0586, 0.3414,
+//static float displaced_filter[] = { -0.0586, -0.0829, 0.0586, 0.3414,
 //		0.4830, 0.3414, 0.0586, -0.0829, -0.0586 };
-//static float displaced_filter_weights[] = { 0, 0, 0.3333, 0.3334, 0.3333, 0, 0 };
-static float displaced_filter_weights[] = { 0.3333, 0.3334, 0.3333 };
-//static float displaced_filter_weights[] = { 0.3, 0.4, 0.3 };
-//static float displaced_filter_weights[] = { 0.45, 0.35, 0.2 };
+//static float displaced_filter[] = { 0, 0, 0.3333, 0.3334, 0.3333, 0, 0 };
+static float displaced_filter[] = { 0.3333, 0.3334, 0.3333 };
+//static float displaced_filter[] = { 0.3, 0.4, 0.3 };
+//static float displaced_filter[] = { 0.45, 0.35, 0.2 };
+
+static int displaced_filter_length = sizeof(displaced_filter) / sizeof(float);
 
 /* Downsamples the oversampled 3 pixels to one pixel (9 subpixels to 3 subpixels).
  * [RGB](i) <- [RGB](3i) [RGB](3i+1) [RGB](3i+2)
@@ -211,7 +223,7 @@ static unsigned char slimming_color = 4;
 static unsigned char filling_color = 0xff;
 static unsigned char debug_color = 0x80;
 
-inline void font_set_contour(unsigned char *d, unsigned char color) {
+static inline void font_set_contour(unsigned char *d, unsigned char color) {
 	if (d[0] != slimming_color)
 		d[0] = color;
 }
@@ -282,8 +294,8 @@ void font_draw_line(bitmap_t *canvas, FT_Vector *p0, FT_Vector *p1,
 	}
 }
 
-void font_draw_conic(bitmap_t *canvas, FT_Vector *p0, FT_Vector *p1/*conic*/,
-		FT_Vector *p2, unsigned char color) {
+static void font_draw_conic(bitmap_t *canvas, FT_Vector *p0,
+		FT_Vector *p1/*conic*/, FT_Vector *p2, unsigned char color) {
 	contour_color = color;
 //	printf("font_draw_conic: %ld.%ld %ld.%ld %ld.%ld", p0->x, p0->y, p1->x, p1->y,
 //			p2->x, p2->y);
@@ -291,37 +303,18 @@ void font_draw_conic(bitmap_t *canvas, FT_Vector *p0, FT_Vector *p1/*conic*/,
 			canvas->bytes_per_line, canvas->bytes_per_pixel);
 }
 
-void font_draw_cubic(bitmap_t *canvas, FT_Vector *p0, FT_Vector *p1,
+static void font_draw_cubic(bitmap_t *canvas, FT_Vector *p0, FT_Vector *p1,
 		FT_Vector *p2, FT_Vector *p3, unsigned char color) {
 	contour_color = color;
 	plotCubicBezier(p0->x, p0->y, p1->x, p1->y, p2->x, p2->y, p3->x, p3->y,
 			canvas->data, canvas->bytes_per_line, canvas->bytes_per_pixel);
 }
 
-static int subpixel_rendering = 1;
-
-//unsigned char filter[] = { 0x18, 0x1C, 0x97, 0x1C, 0x18 }; // Mac OS X 10.8
-//float fir5_filter[] = { 0.119, 0.370, 0.511, 0.370, 0.119 }; // mitchell_filter
-//float fir5_filter[] = { 0.090, 0.373, 0.536, 0.373, 0.090 }; // catmull_rom_filter
-//float fir5_filter[] = { -0.106, 0.244, 0.726, 0.244, -0.106 };
-//float fir5_filter[] = { 0.059, 0.235, 0.412, 0.235, 0.059 };
-//float fir5_filter[] = { 0., 1. / 4., 2. / 4., 1. / 4., 0. };
-//float fir5_filter[] = { 1. / 17., 4. / 17., 7. / 17., 4. / 17., 1. / 17. };
-static float fir5_filter[] =
-		{ 1. / 16., 5. / 16., 10. / 16., 5. / 16., 1. / 16. };
-
-static int subpixel_filter_type = DISPLACED_WEIGHTED;
-
-//unsigned char filter[] = { 15, 60, 105, 60, 15 };
-//unsigned char filter[] = { 30, 60, 85, 60, 30 };
-//	unsigned char filter[] = {0, 0, 255, 0, 0};
-//	unsigned char filter[] = {28, 56, 85, 56, 28};
-
-inline int is_same_point(FT_Vector *p0, FT_Vector *p1) {
+static inline int is_same_point(FT_Vector *p0, FT_Vector *p1) {
 	return p0->x == p1->x && p0->y == p1->y;
 }
 
-inline int font_contour_on(unsigned char *s) {
+static inline int font_contour_on(unsigned char *s) {
 	return s[0] == contour_colors[0] || s[0] == contour_colors[1];
 }
 
@@ -347,7 +340,7 @@ inline int font_contour_around(unsigned char *s, int bytes_per_line) {
 	return 0;
 }
 
-int font_slim_contour(bitmap_t *canvas, FT_Vector *p0) {
+static int font_slim_contour(bitmap_t *canvas, FT_Vector *p0) {
 	if (p0->x < 0 || p0->x >= canvas->rect.width || p0->y < 0
 			|| p0->y >= canvas->rect.height)
 		return 0;
@@ -662,21 +655,18 @@ void font_fill_contours(bitmap_t *dst, int dst_w, int dst_h, bitmap_t *src,
 
 		if (subpixel_rendering) {
 			if (subpixel_filter_type == DISPLACED_FILTER || rgb_weighted) {
-				if (sizeof(displaced_filter_weights) / sizeof(float) == 3) {
+				if (displaced_filter_length == 3) {
 					displaced_downsample(d, subpixel_line, dst_w,
-							displaced_filter_weights);
-				} else if (sizeof(displaced_filter_weights) / sizeof(float)
-						== 5) {
+							displaced_filter);
+				} else if (displaced_filter_length == 5) {
 					displaced_downsample5(d, subpixel_line, dst_w,
-							displaced_filter_weights);
-				} else if (sizeof(displaced_filter_weights) / sizeof(float)
-						== 7) {
+							displaced_filter);
+				} else if (displaced_filter_length == 7) {
 					displaced_downsample7(d, subpixel_line, dst_w,
-							displaced_filter_weights);
-				} else if (sizeof(displaced_filter_weights) / sizeof(float)
-						== 9) {
+							displaced_filter);
+				} else if (displaced_filter_length == 9) {
 					displaced_downsample9(d, subpixel_line, dst_w,
-							displaced_filter_weights);
+							displaced_filter);
 				}
 				/* dump bytes */
 //				for (i = 0; i < subpixel_line_size; i += 3) {
@@ -746,7 +736,7 @@ void font_fill_contours(bitmap_t *dst, int dst_w, int dst_h, bitmap_t *src,
 		free(subpixel_line);
 }
 
-inline int extra_right(int x, int grid_size, int margin) {
+static inline int extra_right(int x, int grid_size, int margin) {
 	if (x > 0) {
 		/* 0 .. 10 .. 20 .. 30 */
 		/* [20, 29] */
@@ -761,7 +751,7 @@ inline int extra_right(int x, int grid_size, int margin) {
 	return margin;
 }
 
-inline int extra_left(int x, int grid_size, int margin) {
+static inline int extra_left(int x, int grid_size, int margin) {
 	if (x > 0) {
 		/* 0 .. 10 .. 20 .. 30 */
 		/* [0, 9] */
