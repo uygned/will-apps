@@ -7,15 +7,68 @@
 //#define FONT_DEBUG
 //#define LABEL_CONTOUR_POINTS
 
-static int subpixel_rendering = 1;
-static int subpixel_filter_type = DISPLACED_WEIGHTED;
+static char subpixel_filter_type = FIR5_FILTER; // DISPLACED_FILTER
+static char subpixel_weighted = 1;
 
+static char run_fir5_filter = 0;
+
+static char run_inpixel_filter = 0;
+
+static char run_color_compensation = 0;
+
+/**
+ * Microsoft patents:
+ * US 6188385 B1: Method and apparatus for displaying images such as text
+ * US 6393145 B2: Methods apparatus and data structures for enhancing the resolution of images to be rendered on patterned display devices
+ * US 6624828 B1: Method and apparatus for improving the quality of displayed images through the use of user reference information
+ */
+
+/** color compensation */
+#define RED_FILTER_THRESHOLD		100
+#define RED_FILTER_RED_FACTOR		3
+#define RED_FILTER_GREEN_FACTOR		2
+#define BLUE_FILTER_THRESHOLD		128
+#define BLUE_FILTER_RED_FACTOR		2
+#define BLUE_FILTER_GREEN_FACTOR	1
+#define BLUE_FILTER_BLUE_FACTOR		3
+
+/**
+ * Other patents:
+ * Methods and systems for sub-pixel rendering with adaptive filtering
+ */
+
+/* http://keithp.com/~keithp/render/ */
+static float inpixel_filter[3][3] = { { 9 / 13., 3 / 13., 1 / 13. }, // red
+		{ 1 / 6., 4 / 6., 1 / 6. }, // green
+		{ 1 / 13., 3 / 13., 9 / 13. } /* blue */};
+/* US 6624828 FIG. 23C */
+//static float inpixel_filter[3][3] = { { 0.459, 0.418, -0.002 }, // red
+//		{ 0.393, 0.430, 0.367 }, // green
+//		{ 0.140, 0.290, 0.412 } /* blue */};
+//static float inpixel_filter[3][3] = { { 9 / 13., 3 / 13., 1 / 13. }/* red */, { 1 / 6.,
+//		4 / 6., 1 / 6. }/* green */, { 1 / 13., 3 / 13., 9 / 13. }/* blue */};
+
+/* In general, the kernels will be of form [a-c, a+c, 2*a, a+c, a-c],
+ * where c is a free parameter and 0 <= c <= a,
+ * and for the maximally saturating case a has the value 1/6,
+ * though a should probably be increased slightly (~ 10 %) to enhance contrast of rendering.
+ * ...
+ * As an aside, if the foreground color is known,
+ * then a correction to alpha can be calculated,
+ * because the background can be assumed to be far away from foreground
+ * so that the text can be read in the first place.
+ */
 //float fir5_filter[] = { 0.119, 0.370, 0.511, 0.370, 0.119 }; // mitchell_filter
 //float fir5_filter[] = { 0.090, 0.373, 0.536, 0.373, 0.090 }; // catmull_rom_filter
 //float fir5_filter[] = { -0.106, 0.244, 0.726, 0.244, -0.106 };
 //float fir5_filter[] = { 0.059, 0.235, 0.412, 0.235, 0.059 };
 //float fir5_filter[] = { 0., 1. / 4., 2. / 4., 1. / 4., 0. };
-static float fir5_filter[] = { 1. / 17., 4. / 17., 7. / 17., 4. / 17., 1. / 17. };
+//static float fir5_filter[] = { 1. / 17., 4. / 17., 7. / 17., 4. / 17., 1. / 17. };
+//static float fir5_filter[] = { 1. / 9., 2. / 9., 3. / 9., 2. / 9., 1. / 9. };
+//static float fir5_filter[] = { 0, 1 / 3., 1 / 3., 1 / 3., 0 };
+// If we take account for a gamma value of 2, we end up with weights of 1, 4, 9, 4, 1.
+//static float fir5_filter[] = { 1 / 19., 4 / 19., 9 / 19., 4 / 19., 1 / 19. };
+static float fir5_filter[] = { 0, 0, 1, 0, 0 };
 
 //static float displaced_filter[] = { -0.0955, -0.3090, 0.25, 0.25, 0.809,
 //		0.25, 0.25, -0.3090, -0.0955 };
@@ -215,6 +268,37 @@ void displaced_downsample9(unsigned char *dst, unsigned char *src,
 		/*           */b_prpr = s[5], b_prev = s[8];
 		d += dst_pixel_size;
 		s += src_triple_size;
+	}
+}
+
+static void apply_inpixel_filter(unsigned char *d, int w, float filter[3][3]) {
+	float r, g, b;
+	int i, j;
+	for (i = 0; i < w; i++, d += 3) {
+		r = 0, g = 0, b = 0;
+		for (j = 0; j < 3; j++) {
+			r += d[j] * filter[0][j];
+			g += d[j] * filter[1][j];
+			b += d[j] * filter[2][j];
+		}
+		d[0] = float2byte(r), d[1] = float2byte(g), d[2] = float2byte(b);
+	}
+}
+
+static void apply_color_compensation(unsigned char *d, int w) {
+	int i, r, g, b;
+	for (i = 0; i < w; i++, d += 3) {
+		r = d[0], g = d[1], b = d[2];
+		if (abs(r - g) > RED_FILTER_THRESHOLD) {
+			r = r - ((r - g) * RED_FILTER_RED_FACTOR) / 10;
+			g = g + ((r - g) * RED_FILTER_GREEN_FACTOR) / 10;
+		}
+		if (abs(g - b) > BLUE_FILTER_THRESHOLD) {
+			r = r - ((g - b) * BLUE_FILTER_RED_FACTOR) / 10;
+			g = g - ((g - b) * BLUE_FILTER_GREEN_FACTOR) / 10;
+			b = b + ((g - b) * BLUE_FILTER_BLUE_FACTOR) / 10;
+		}
+		d[0] = int2byte(r), d[1] = int2byte(g), d[2] = int2byte(b);
 	}
 }
 
@@ -473,6 +557,8 @@ static int font_slim_contour(bitmap_t *canvas, FT_Vector *p0) {
 void font_fill_contours(bitmap_t *dst, int dst_w, int dst_h, bitmap_t *src,
 		int src_x, int src_y, int grid_width, int grid_height,
 		unsigned char linear2srgb[]) {
+	char subpixel_rendering = subpixel_filter_type != 0;
+
 	int src_line_size = src->bytes_per_line;
 	int src_pixel_size = src->bytes_per_pixel;
 	unsigned char *src_line_ = src->data + src_y * src_line_size
@@ -491,8 +577,6 @@ void font_fill_contours(bitmap_t *dst, int dst_w, int dst_h, bitmap_t *src,
 	unsigned grid_area = grid_width * grid_height;
 	float weight;
 
-	char rgb_weighted = subpixel_filter_type == DISPLACED_WEIGHTED;
-
 	/* subpixel rendering via grid partitioning, one grid partition corresponds one subpixel */
 	int part_count = 0;
 	unsigned *part_ends = NULL;
@@ -500,21 +584,31 @@ void font_fill_contours(bitmap_t *dst, int dst_w, int dst_h, bitmap_t *src,
 	float *part_weights = NULL;
 	unsigned char *subpixel_line = NULL;
 	unsigned subpixel_line_size;
+	unsigned char *fir5_line = NULL;
+	unsigned fir5_line_size;
 	if (subpixel_rendering) {
-		if (subpixel_filter_type == DISPLACED_FILTER || rgb_weighted) {
-			/* 3 pixels per grid are required to do displaced downsampling */
-			part_count = 9;
-			/* partition areas for one pixel should follow P(R):P(G):P(B)=3:6:1 */
-			/* but sometimes 3:5:2 is used */
-			if (rgb_weighted && grid_width < (3 + 6 + 1) * 3)
-				perror("error DISPLACED_WEIGHTED");
+		if (subpixel_filter_type == DISPLACED_FILTER) {
+			/* 1 dest pixel requires 3 source pixels */
+			part_count = 3 * 3;
 			subpixel_line_size = dst_w * part_count;
+			fir5_line_size = dst_w * 3;
 		} else {
-			/* subpixel rendering one pixel per grid */
+			/* 1 dest pixel requires 1 source pixel (i.e. 3 subpixels) */
 			part_count = 3;
-			/* add 2 subpixels on both left side and right side for FIR5 filtering */
+			/* add 2 subpixels on both left and right side for FIR5 filtering */
 			subpixel_line_size = dst_w * part_count + 4;
 		}
+
+		/* partition areas for one source pixel should follow R:G:B=3:6:1 */
+		int subpixel_weighted_multi = 1;
+		if (subpixel_weighted) {
+			if (grid_width < part_count / 3 * 10)
+				perror("error subpixel_weighted");
+			subpixel_weighted_multi = grid_width / (part_count / 3 * 10);
+		}
+
+		if (run_fir5_filter && subpixel_filter_type != FIR5_FILTER)
+			fir5_line = malloc(fir5_line_size + 4);
 
 		part_ends = malloc(sizeof(unsigned) * part_count);
 		part_areas = malloc(sizeof(unsigned) * part_count);
@@ -526,13 +620,13 @@ void font_fill_contours(bitmap_t *dst, int dst_w, int dst_h, bitmap_t *src,
 #endif
 		j = 0;
 		for (i = 0; i < part_count; i++) {
-			if (rgb_weighted)
-				k = i % 3 == 0 ? 3 : (i % 3 == 1 ? 6 : 1);
+			if (subpixel_weighted)
+				k = (int[] ) { 3, 6, 1 } [i % 3] * subpixel_weighted_multi;
 			else
 				k = (grid_width - j) / (part_count - i);
 			j += k;
-			part_areas[i] = k * grid_height;
 			part_ends[i] = j;
+			part_areas[i] = k * grid_height;
 #ifdef FONT_DEBUG
 			printf(" %02d", k);
 #endif
@@ -540,7 +634,7 @@ void font_fill_contours(bitmap_t *dst, int dst_w, int dst_h, bitmap_t *src,
 #ifdef FONT_DEBUG
 		printf("\npartition ends:  ");
 		for (i = 0; i < part_count; i++)
-		printf(" %02d", part_ends[i]);
+			printf(" %02d", part_ends[i]);
 		printf("\n");
 #endif
 	}
@@ -629,18 +723,22 @@ void font_fill_contours(bitmap_t *dst, int dst_w, int dst_h, bitmap_t *src,
 //					printf("%f %.0f/%d\n", weight, part_weights[k], part_areas[k]);
 
 					j = gi * part_count + i; /* subpixel index */
-					if (subpixel_filter_type == DISPLACED_FILTER
-							|| rgb_weighted) {
+					if (subpixel_filter_type == DISPLACED_FILTER) {
 						subpixel_line[j] = float2byte(weight * 255.0);
 					} else if (subpixel_filter_type == CUSTOME_FILTER) {
 						subpixel_line[j + 2] = float2byte(weight * 255.0);
 					} else {
-						/* FIR5 filtering */
-						for (k = 0; k < 5; k++) {
-							float f = subpixel_line[j + k]
-									+ fir5_filter[k] * weight * 255.0;
+						float z = (float[] ) { 0.3, 0.6, 0.1 } [j % 3];
+						for (k = 1; k < 4; k++) {
+							float f = subpixel_line[j + k] + weight * 255.0 * z;
 							subpixel_line[j + k] = float2byte(f);
 						}
+						/* FIR5 filtering */
+//						for (k = 0; k < 5; k++) {
+//							float f = subpixel_line[j + k]
+//									+ fir5_filter[k] * weight * 255.0;
+//							subpixel_line[j + k] = float2byte(f);
+//						}
 					}
 				}
 			} else if (weight > 0) {
@@ -654,7 +752,7 @@ void font_fill_contours(bitmap_t *dst, int dst_w, int dst_h, bitmap_t *src,
 		} /* gi */
 
 		if (subpixel_rendering) {
-			if (subpixel_filter_type == DISPLACED_FILTER || rgb_weighted) {
+			if (subpixel_filter_type == DISPLACED_FILTER) {
 				if (displaced_filter_length == 3) {
 					displaced_downsample(d, subpixel_line, dst_w,
 							displaced_filter);
@@ -668,6 +766,24 @@ void font_fill_contours(bitmap_t *dst, int dst_w, int dst_h, bitmap_t *src,
 					displaced_downsample9(d, subpixel_line, dst_w,
 							displaced_filter);
 				}
+
+				if (run_fir5_filter) {
+					memset(fir5_line, 0, fir5_line_size + 4);
+					for (i = 0; i < fir5_line_size; i++) {
+						for (k = 0; k < 5; k++) {
+							float f = fir5_line[i + k] + fir5_filter[k] * d[i];
+							fir5_line[i + k] = float2byte(f);
+						}
+					}
+					memcpy(d, fir5_line + 2, fir5_line_size);
+				} else if (run_inpixel_filter) {
+					apply_inpixel_filter(d, dst_w, inpixel_filter);
+				}
+
+				if (run_color_compensation) {
+					apply_color_compensation(d, dst_w);
+				}
+
 				/* dump bytes */
 //				for (i = 0; i < subpixel_line_size; i += 3) {
 //					printf(" %02X%02X%02X", subpixel_line[i], subpixel_line[i + 1],
@@ -710,17 +826,22 @@ void font_fill_contours(bitmap_t *dst, int dst_w, int dst_h, bitmap_t *src,
 						}
 					}
 				}
-				for (i = 2; i < subpixel_line_size - 2;) {
-					if (linear2srgb) {
+				if (linear2srgb) {
+					for (i = 2; i < subpixel_line_size - 2;) {
 						d[2] = linear2srgb[0xff - subpixel_line[i++]];
 						d[1] = linear2srgb[0xff - subpixel_line[i++]];
 						d[0] = linear2srgb[0xff - subpixel_line[i++]];
-					} else {
+						d += dst_pixel_size;
+					}
+				} else if (dst_pixel_size == 3) {
+					memcpy(d, subpixel_line + 2, subpixel_line_size - 4);
+				} else {
+					for (i = 2; i < subpixel_line_size - 2;) {
 						d[0] = subpixel_line[i++];
 						d[1] = subpixel_line[i++];
 						d[2] = subpixel_line[i++];
+						d += dst_pixel_size;
 					}
-					d += dst_pixel_size;
 				}
 			}
 		}
@@ -734,6 +855,8 @@ void font_fill_contours(bitmap_t *dst, int dst_w, int dst_h, bitmap_t *src,
 		free(part_weights);
 	if (subpixel_line)
 		free(subpixel_line);
+	if (fir5_line)
+		free(fir5_line);
 }
 
 static inline int extra_right(int x, int grid_size, int margin) {
@@ -849,7 +972,7 @@ bitmap_t *font_draw_contours(bitmap_t *canvas, FT_Outline *outline,
 
 #ifdef FONT_DEBUG
 	char tag_mode = FT_CURVE_TAG_ON | FT_CURVE_TAG_CONIC | FT_CURVE_TAG_CUBIC;
-	char *tags[] = {"CONIC", "ON", "CUBIC"};
+	char *tags[] = { "CONIC", "ON", "CUBIC" };
 	char buf[2];
 	buf[1] = 0;
 #endif
@@ -1091,6 +1214,25 @@ void font_paint_raw(bitmap_t *dst, bitmap_t *src, int width, int height) {
 		}
 	}
 }
+
+
+//	dst_line = dst->data;
+//	src_line = subpixel_data;
+////	d = dst->data;
+//	s = subpixel_data;
+//	for (j = 0; j < dst_h; j++) {
+//		d = dst_line;
+////		s = src_line;
+//		for (i = 0; i < subpixel_line_size; i += 6, s += 3) {
+//			*d++ = *s++;
+//			*d++ = *s++;
+//			*d++ = *s++;
+//		}
+//		src_line += subpixel_line_size;
+//		dst_line += dst_line_size;
+//	}
+//	printf("dst_line_size %d %d %d\n", dst_line_size, dst_w, dst_pixel_size);
+
 
 /* functions for bresenham_rasterizer */
 //extern bitmap_t *bmp_raster;
